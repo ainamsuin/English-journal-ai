@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>English Journal AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #EDEAE0;
+    --card: #F7F5EC;
+    --ink: #26323A;
+    --ink-soft: #6B7178;
+    --accent: #3E6259;
+    --accent-soft: #DCE6DE;
+    --highlight-soft: #F3E3C2;
+    --line: #C9C2AE;
+    --white: #FFFFFF;
+    --danger: #A6503C;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Noto Sans KR', sans-serif;
+    min-height: 100vh;
+    position: relative;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background-image: radial-gradient(var(--line) 0.6px, transparent 0.6px);
+    background-size: 18px 18px;
+    opacity: 0.35;
+    pointer-events: none;
+  }
+  .kr { font-family: 'Noto Serif KR', serif; }
+  .en { font-family: 'JetBrains Mono', monospace; }
+
+  .wrap { max-width: 640px; margin: 0 auto; padding: 28px 20px 70px; position: relative; }
+
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; gap: 10px; }
+  .header-left { display: flex; align-items: center; gap: 4px; }
+  .header h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.3px; margin: 0; }
+  .header p.sub { font-size: 12px; color: var(--ink-soft); margin: 3px 0 0; }
+  .icon-btn { background: none; border: none; cursor: pointer; color: var(--ink); display: flex; align-items: center; justify-content: center; padding: 6px; border-radius: 3px; }
+  .icon-btn:hover { background: var(--card); }
+
+  .btn {
+    font-family: 'Noto Sans KR', sans-serif;
+    border: 1.5px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+    border-radius: 3px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: transform 0.12s ease, opacity 0.12s ease;
+  }
+  .btn:hover { transform: translateY(-1px); opacity: 0.92; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .btn-ghost { background: transparent; color: var(--ink); border: 1.5px solid var(--line); }
+  .btn-ghost:hover { border-color: var(--ink); background: var(--card); }
+  .btn-danger { color: var(--danger); border-color: var(--danger); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 1px 0 var(--line); }
+
+  .field-label { font-size: 12px; color: var(--ink-soft); display: block; margin-bottom: 8px; }
+  .input, .textarea {
+    font-family: 'Noto Serif KR', serif;
+    background: var(--white);
+    border: 1.5px solid var(--line);
+    border-radius: 3px;
+    padding: 12px 14px;
+    color: var(--ink);
+    font-size: 15px;
+    width: 100%;
+    outline: none;
+  }
+  .input:focus, .textarea:focus { border-color: var(--accent); }
+  .textarea { line-height: 1.8; resize: vertical; }
+  .input.mono { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; overflow-x: auto; }
+  .tab { font-size: 13px; font-weight: 500; padding: 8px 14px; color: var(--ink-soft); border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .chip { display: inline-flex; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; background: var(--accent-soft); color: var(--accent); border-radius: 3px; padding: 5px 10px; margin: 3px; }
+  .highlight { background: var(--highlight-soft); padding: 0 2px; }
+
+  .photo-thumb { position: relative; width: 84px; height: 84px; }
+  .photo-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); }
+  .photo-thumb button { position: absolute; top: -6px; right: -6px; background: var(--ink); color: var(--paper); border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 12px; line-height: 1; }
+  .photo-add { width: 84px; height: 84px; border-radius: 3px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; font-size: 11px; }
+
+  .entry-row { padding: 14px; display: flex; gap: 12px; cursor: pointer; align-items: center; margin-bottom: 12px; }
+  .entry-thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); flex-shrink: 0; }
+  .entry-thumb-fallback { width: 56px; height: 56px; border-radius: 3px; background: var(--accent-soft); display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--accent); font-size: 20px; }
+  .entry-meta { min-width: 0; flex: 1; }
+  .entry-meta .date { font-size: 11px; color: var(--ink-soft); margin: 0; }
+  .entry-meta .title { font-family: 'Noto Serif KR', serif; font-size: 15px; font-weight: 600; margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .entry-meta .snippet { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--ink-soft); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .err { color: var(--danger); font-size: 13px; margin-bottom: 12px; }
+  .empty { padding: 40px 24px; text-align: center; }
+  .empty p { font-size: 15px; color: var(--ink-soft); line-height: 1.8; }
+
+  @keyframes dotpulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+  .typing { display: inline-flex; gap: 3px; align-items: center; }
+  .typing span.dot { font-family: 'JetBrains Mono', monospace; animation: dotpulse 1.1s ease-in-out infinite; }
+  .typing span.dot:nth-child(2) { animation-delay: 0.15s; }
+  .typing span.dot:nth-child(3) { animation-delay: 0.3s; }
+  .typing span.dot:nth-child(4) { animation-delay: 0.45s; }
+  .typing span.dot:nth-child(5) { animation-delay: 0.6s; }
+  .typing .label { margin-left: 10px; font-size: 13px; color: var(--ink-soft); font-family: 'Noto Sans KR', sans-serif; }
+
+  .fade-in { animation: fadein 0.35s ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(38,50,58,0.45); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
+  .modal { background: var(--card); border-radius: 6px; padding: 24px; max-width: 420px; width: 100%; border: 1px solid var(--line); }
+  .modal h2 { font-size: 16px; margin: 0 0 6px; }
+  .modal p.desc { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 18px; line-height: 1.6; }
+  .modal .row { margin-bottom: 14px; }
+  .modal .row label { font-size: 12px; color: var(--ink-soft); display: block; margin-bottom: 6px; }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+  .spin { display: inline-block; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  ::-webkit-scrollbar { height: 6px; width: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .typing span.dot { animation: none; opacity: 1; }
+    .fade-in { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var MAX_PHOTOS = Infinity; // no fixed count limit — see TOTAL_PHOTO_BYTES_LIMIT below
+  var TOTAL_PHOTO_BYTES_LIMIT = 15 * 1024 * 1024; // ~15MB of base64 data total, a safe margin under Gemini's request size limit
+  var MAX_DIM = 900;
+  var ENTRIES_KEY = "ejai_entries";
+  var SETTINGS_KEY = "ejai_settings";
+
+  var state = {
+    view: "home", // home | new | detail | settings
+    entries: [],
+    activeEntry: null,
+    newEntry: { title: "", korean: "", photos: [] },
+    generating: false,
+    genErr: "",
+    result: null,
+    saving: false,
+    resultTab: "easy",
+    settings: { appSecret: "", model: "gemini-2.5-flash" },
+    showSettings: false,
+  };
+
+  function loadEntries() {
+    try {
+      var raw = localStorage.getItem(ENTRIES_KEY);
+      state.entries = raw ? JSON.parse(raw) : [];
+    } catch (e) { state.entries = []; }
+  }
+  function saveEntries() {
+    localStorage.setItem(ENTRIES_KEY, JSON.stringify(state.entries));
+  }
+  function loadSettings() {
+    try {
+      var raw = localStorage.getItem(SETTINGS_KEY);
+      if (raw) state.settings = Object.assign(state.settings, JSON.parse(raw));
+    } catch (e) {}
+  }
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+  }
+
+  function todayStr() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function escapeHtml(str) {
+    if (str == null) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function resizeImageFile(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error("파일을 읽을 수 없습니다.")); };
+      reader.onload = function () {
+        var img = new Image();
+        img.onerror = function () { reject(new Error("이미지를 불러올 수 없습니다.")); };
+        img.onload = function () {
+          var width = img.width, height = img.height;
+          if (width > MAX_DIM || height > MAX_DIM) {
+            var scale = MAX_DIM / Math.max(width, height);
+            width = Math.round(width * scale);
+            height = Math.round(height * scale);
+          }
+          var canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          var ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL("image/jpeg", 0.72));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function dataUrlToParts(dataUrl) {
+    var idx = dataUrl.indexOf(",");
+    var meta = dataUrl.slice(0, idx);
+    var data = dataUrl.slice(idx + 1);
+    var m = meta.match(/data:(.*);base64/);
+    return { mime: m ? m[1] : "image/jpeg", data: data };
+  }
+
+  function totalPhotoBytes(photos) {
+    // Rough size of the base64 payload in bytes (base64 is ~4/3 the size of raw bytes,
+    // but since we only need an estimate for a UI hint, string length is close enough).
+    return photos.reduce(function (sum, p) { return sum + p.length; }, 0);
+  }
+
+  function photoUsageLabel(photos) {
+    var used = totalPhotoBytes(photos);
+    var usedMb = (used / (1024 * 1024)).toFixed(1);
+    var limitMb = (TOTAL_PHOTO_BYTES_LIMIT / (1024 * 1024)).toFixed(0);
+    var count = photos.length;
+    var countLabel = count > 0 ? count + "장 첨부됨 · " : "";
+    return countLabel + "사진은 개수 제한 없이 첨부할 수 있어요 (용량 약 " + usedMb + "MB / " + limitMb + "MB 사용 중).";
+  }
+
+  // The Gemini API key is never present in this file or in the browser at all — it lives
+  // only in the server's GEMINI_API_KEY environment variable (see /api/generate.js). This
+  // page just calls our own server endpoint, which calls Gemini on our behalf.
+  function callServer(korean, photos) {
+    var model = state.settings.model || "gemini-2.5-flash";
+    return fetch("/api/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-app-secret": state.settings.appSecret || "",
+      },
+      body: JSON.stringify({ korean: korean, photos: photos, model: model }),
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        if (!res.ok) {
+          throw new Error((data && data.error) || ("요청에 실패했습니다 (" + res.status + ").") );
+        }
+        return data;
+      });
+    }).then(function (data) {
+      var text = data.text || "";
+      if (!text) throw new Error("AI 응답이 비어있습니다.");
+      var cleaned = text.replace(/```json|```/g, "").trim();
+      var start = cleaned.indexOf("{");
+      var end = cleaned.lastIndexOf("}");
+      var jsonStr = start >= 0 ? cleaned.slice(start, end + 1) : cleaned;
+      return JSON.parse(jsonStr);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------------
+
+  var app = document.getElementById("app");
+
+  function render() {
+    var html = '<div class="wrap">';
+    html += renderHeader();
+    if (state.view === "home") html += renderHome();
+    else if (state.view === "new") html += renderNew();
+    else if (state.view === "detail") html += renderDetail();
+    html += "</div>";
+    if (state.showSettings) html += renderSettingsModal();
+    app.innerHTML = html;
+    bindEvents();
+  }
+
+  function renderHeader() {
+    var back = state.view !== "home"
+      ? '<button class="icon-btn" data-action="go-home" aria-label="뒤로 가기">←</button>'
+      : "";
+    var newBtn = state.view === "home"
+      ? '<button class="btn" data-action="start-new">＋ 새 기록</button>'
+      : "";
+    return (
+      '<div class="header">' +
+        '<div class="header-left">' + back +
+          '<div>' +
+            '<h1 class="kr">English Journal <span class="en" style="color:var(--accent)">AI</span></h1>' +
+            '<p class="sub">한국어로 기록하면 영어 사고를 만들어주는 AI 영어 저널</p>' +
+          "</div>" +
+        "</div>" +
+        '<div style="display:flex; gap:6px; align-items:center;">' +
+          newBtn +
+          '<button class="icon-btn" data-action="open-settings" aria-label="설정" title="설정">⚙</button>' +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  function renderHome() {
+    if (state.entries.length === 0) {
+      return (
+        '<div class="fade-in empty card">' +
+          '<p class="kr">아직 기록이 없어요.<br>오늘 있었던 일을 한국어로 적어보세요.</p>' +
+          '<button class="btn" data-action="start-new">＋ 첫 기록 시작하기</button>' +
+        "</div>"
+      );
+    }
+    var rows = state.entries.map(function (e) {
+      var thumb = e.photos && e.photos[0]
+        ? '<img class="entry-thumb" src="' + e.photos[0] + '" alt="" />'
+        : '<div class="entry-thumb-fallback">📔</div>';
+      return (
+        '<div class="card entry-row" data-action="open-entry" data-id="' + e.id + '">' +
+          thumb +
+          '<div class="entry-meta">' +
+            '<p class="date">' + escapeHtml(e.date) + "</p>" +
+            '<p class="title kr">' + escapeHtml(e.title) + "</p>" +
+            '<p class="snippet en">' + escapeHtml(e.naturalEnglish || "") + "</p>" +
+          "</div>" +
+        "</div>"
+      );
+    }).join("");
+    return '<div class="fade-in">' + rows + "</div>";
+  }
+
+  function renderPhotoStrip(photos, removable) {
+    var thumbs = photos.map(function (p, i) {
+      var removeBtn = removable
+        ? '<button data-action="remove-photo" data-idx="' + i + '" aria-label="사진 삭제">×</button>'
+        : "";
+      return '<div class="photo-thumb"><img src="' + p + '" alt="" />' + removeBtn + "</div>";
+    }).join("");
+    var addBtn = removable && photos.length < MAX_PHOTOS
+      ? '<button class="btn-ghost photo-add" data-action="add-photo">📷<span>사진 추가</span></button>'
+      : "";
+    return '<div style="display:flex; gap:10px; flex-wrap:wrap;">' + thumbs + addBtn + "</div>";
+  }
+
+  function renderNew() {
+    if (state.result) {
+      return renderResultBlock({
+        result: state.result,
+        korean: state.newEntry.korean,
+        photos: state.newEntry.photos,
+        title: state.newEntry.title,
+        readOnly: false,
+      });
+    }
+    var err = state.genErr ? '<p class="err">' + escapeHtml(state.genErr) + "</p>" : "";
+    var genBtnContent = state.generating
+      ? '<span class="typing"><span class="dot">·</span><span class="dot">·</span><span class="dot">·</span><span class="dot">·</span><span class="dot">·</span><span class="label">영어로 옮기는 중</span></span>'
+      : "✨ 영어 일기 만들기";
+    return (
+      '<div class="fade-in">' +
+        '<div style="margin-bottom:18px;">' +
+          '<label class="field-label">사진 (선택)</label>' +
+          renderPhotoStrip(state.newEntry.photos, true) +
+          '<input type="file" id="photo-input" accept="image/*" multiple style="display:none" />' +
+          '<p style="font-size:11.5px; color:var(--ink-soft); margin-top:6px;">' + photoUsageLabel(state.newEntry.photos) + "</p>" +
+        "</div>" +
+        '<div style="margin-bottom:18px;">' +
+          '<label class="field-label">오늘 있었던 일을 한국어로 적어보세요</label>' +
+          '<textarea class="textarea kr" id="korean-input" rows="8" placeholder="오늘은 전시를 다녀왔다. 사람이 적어서 좋았다...">' + escapeHtml(state.newEntry.korean) + "</textarea>" +
+        "</div>" +
+        err +
+        '<button class="btn" data-action="generate" ' + (state.generating ? "disabled" : "") + ">" + genBtnContent + "</button>" +
+      "</div>"
+    );
+  }
+
+  function renderDetail() {
+    if (!state.activeEntry) return "";
+    var e = state.activeEntry;
+    var block = renderResultBlock({ result: e, korean: e.korean, photos: e.photos, title: e.title, readOnly: true });
+    return (
+      "<div>" + block +
+        '<div style="margin-top:20px; display:flex; justify-content:flex-end;">' +
+          '<button class="btn-ghost btn-danger" data-action="delete-entry" data-id="' + e.id + '">🗑 삭제하기</button>' +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  function renderResultBlock(opts) {
+    var result = opts.result, korean = opts.korean, photos = opts.photos || [], readOnly = opts.readOnly;
+    var titleField = !readOnly
+      ? '<div style="margin-bottom:16px;"><label class="field-label">제목</label>' +
+        '<input class="input" id="title-input" placeholder="이 기록의 제목을 붙여주세요" value="' + escapeHtml(opts.title) + '" /></div>'
+      : "";
+    var photoStrip = photos.length > 0
+      ? '<div style="display:flex; gap:8px; margin-bottom:16px; overflow-x:auto;">' +
+          photos.map(function (p) { return '<img src="' + p + '" style="width:72px;height:72px;object-fit:cover;border-radius:3px;border:1px solid var(--line);flex-shrink:0;" alt="" />'; }).join("") +
+        "</div>"
+      : "";
+
+    var tabs = [
+      { id: "easy", label: "Easy English" },
+      { id: "natural", label: "Natural English" },
+      { id: "expr", label: "Expressions" },
+      { id: "vocab", label: "Vocabulary" },
+      { id: "script", label: "Speak Script" },
+    ];
+    var tabsHtml = tabs.map(function (t) {
+      return '<div class="tab ' + (state.resultTab === t.id ? "active" : "") + '" data-action="set-tab" data-tab="' + t.id + '">' + t.label + "</div>";
+    }).join("");
+
+    var body = "";
+    if (state.resultTab === "easy") {
+      body = '<p class="en" style="font-size:15px; line-height:1.9; white-space:pre-wrap;">' + escapeHtml(result.easyEnglish) + "</p>";
+    } else if (state.resultTab === "natural") {
+      body = '<p class="en" style="font-size:15px; line-height:1.9; white-space:pre-wrap;">' + escapeHtml(result.naturalEnglish) + "</p>";
+    } else if (state.resultTab === "expr") {
+      body = (result.expressions || []).map(function (e) { return '<span class="chip">' + escapeHtml(e) + "</span>"; }).join("");
+    } else if (state.resultTab === "vocab") {
+      body = '<div style="display:flex; flex-direction:column; gap:10px;">' +
+        (result.vocabulary || []).map(function (v) {
+          return '<div style="display:flex; justify-content:space-between; border-bottom:1px dashed var(--line); padding-bottom:8px;">' +
+            '<span class="en" style="font-weight:600; font-size:14px;">' + escapeHtml(v.word) + "</span>" +
+            '<span class="kr" style="font-size:13.5px; color:var(--ink-soft);">' + escapeHtml(v.meaning) + "</span>" +
+          "</div>";
+        }).join("") + "</div>";
+    } else if (state.resultTab === "script") {
+      body = '<p class="en" style="font-size:14.5px; line-height:2; white-space:pre-wrap;">' + escapeHtml(result.speakScript) + "</p>";
+    }
+
+    var metaBlock = "";
+    if (result.youtubeTitle || (result.hashtags && result.hashtags.length)) {
+      var titleLine = result.youtubeTitle
+        ? '<p style="font-size:13px;"><span style="color:var(--ink-soft)">제목 제안 · </span><span class="highlight en">' + escapeHtml(result.youtubeTitle) + "</span></p>"
+        : "";
+      var tagLine = result.hashtags && result.hashtags.length
+        ? '<div>' + result.hashtags.map(function (h) { return '<span class="en" style="font-size:12px; color:var(--accent); margin-right:8px;">#' + escapeHtml(String(h).replace(/^#/, "")) + "</span>"; }).join("") + "</div>"
+        : "";
+      metaBlock = '<div style="margin-top:16px; display:flex; flex-direction:column; gap:8px;">' + titleLine + tagLine + "</div>";
+    }
+
+    var actions = !readOnly
+      ? '<div style="display:flex; gap:10px; margin-top:22px;">' +
+          '<button class="btn" data-action="save-entry" ' + (state.saving ? "disabled" : "") + ">" + (state.saving ? '<span class="spin">↻</span> 저장 중' : "저장하기") + "</button>" +
+          '<button class="btn-ghost" data-action="discard-result" ' + (state.saving ? "disabled" : "") + ">다시 쓰기</button>" +
+        "</div>"
+      : "";
+
+    return (
+      '<div class="fade-in">' +
+        titleField + photoStrip +
+        '<div class="card" style="padding:16px; margin-bottom:16px;">' +
+          '<p style="font-size:11px; color:var(--accent); font-weight:600; letter-spacing:0.4px; margin-bottom:6px;">KOREAN · 원문</p>' +
+          '<p class="kr" style="font-size:15px; line-height:1.9; white-space:pre-wrap;">' + escapeHtml(korean) + "</p>" +
+        "</div>" +
+        '<div class="tabs">' + tabsHtml + "</div>" +
+        '<div class="card" style="padding:18px; min-height:140px;">' + body + "</div>" +
+        metaBlock + actions +
+      "</div>"
+    );
+  }
+
+  function renderSettingsModal() {
+    return (
+      '<div class="modal-backdrop" data-action="close-settings-backdrop">' +
+        '<div class="modal" onclick="event.stopPropagation()">' +
+          "<h2>설정</h2>" +
+          '<p class="desc">Gemini API 키는 이 화면에 입력하지 않아요 — 서버(GEMINI_API_KEY 환경변수)에만 저장되어 있고 브라우저로 절대 전달되지 않아요. 서버에 앱 비밀번호(APP_SECRET)를 설정해두었다면 아래에 입력해주세요.</p>' +
+          '<div class="row"><label>앱 비밀번호 (서버에 APP_SECRET을 설정한 경우에만)</label><input class="input mono" id="settings-secret" type="password" placeholder="비밀번호" value="' + escapeHtml(state.settings.appSecret) + '" /></div>' +
+          '<div class="row"><label>모델 이름</label><input class="input mono" id="settings-model" type="text" placeholder="gemini-2.5-flash" value="' + escapeHtml(state.settings.model) + '" /></div>' +
+          '<div class="actions">' +
+            '<button class="btn-ghost" data-action="close-settings">취소</button>' +
+            '<button class="btn" data-action="save-settings">저장</button>' +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Events
+  // ---------------------------------------------------------------------
+
+  function bindEvents() {
+    var koreanInput = document.getElementById("korean-input");
+    if (koreanInput) koreanInput.addEventListener("input", function (e) { state.newEntry.korean = e.target.value; });
+
+    var titleInput = document.getElementById("title-input");
+    if (titleInput) titleInput.addEventListener("input", function (e) { state.newEntry.title = e.target.value; });
+
+    var photoInput = document.getElementById("photo-input");
+    if (photoInput) photoInput.addEventListener("change", handlePhotoInputChange);
+
+    app.addEventListener("click", handleClick);
+  }
+
+  function handleClick(e) {
+    var target = e.target.closest("[data-action]");
+    if (!target) return;
+    var action = target.getAttribute("data-action");
+
+    if (action === "start-new") {
+      state.newEntry = { title: "", korean: "", photos: [] };
+      state.result = null;
+      state.genErr = "";
+      state.resultTab = "easy";
+      state.view = "new";
+      render();
+    } else if (action === "go-home") {
+      state.view = "home";
+      state.activeEntry = null;
+      render();
+    } else if (action === "open-settings") {
+      state.showSettings = true;
+      render();
+    } else if (action === "close-settings" || action === "close-settings-backdrop") {
+      state.showSettings = false;
+      render();
+    } else if (action === "save-settings") {
+      var secret = document.getElementById("settings-secret").value;
+      var model = document.getElementById("settings-model").value.trim() || "gemini-2.5-flash";
+      state.settings = { appSecret: secret, model: model };
+      saveSettings();
+      state.showSettings = false;
+      render();
+    } else if (action === "add-photo") {
+      var input = document.getElementById("photo-input");
+      if (input) input.click();
+    } else if (action === "remove-photo") {
+      var idx = parseInt(target.getAttribute("data-idx"), 10);
+      state.newEntry.photos.splice(idx, 1);
+      render();
+    } else if (action === "generate") {
+      handleGenerate();
+    } else if (action === "set-tab") {
+      state.resultTab = target.getAttribute("data-tab");
+      render();
+    } else if (action === "save-entry") {
+      handleSaveEntry();
+    } else if (action === "discard-result") {
+      state.result = null;
+      render();
+    } else if (action === "open-entry") {
+      var id = target.getAttribute("data-id");
+      state.activeEntry = state.entries.find(function (en) { return en.id === id; }) || null;
+      state.resultTab = "easy";
+      state.view = "detail";
+      render();
+    } else if (action === "delete-entry") {
+      var delId = target.getAttribute("data-id");
+      state.entries = state.entries.filter(function (en) { return en.id !== delId; });
+      saveEntries();
+      state.activeEntry = null;
+      state.view = "home";
+      render();
+    }
+  }
+
+  function handlePhotoInputChange(e) {
+    var files = Array.from(e.target.files || []);
+    e.target.value = "";
+    var toProcess = files.filter(function (f) { return f.type.indexOf("image/") === 0; });
+    if (toProcess.length === 0) return;
+    Promise.all(toProcess.map(resizeImageFile)).then(function (results) {
+      var used = totalPhotoBytes(state.newEntry.photos);
+      var accepted = [];
+      var skipped = 0;
+      results.forEach(function (r) {
+        if (used + r.length <= TOTAL_PHOTO_BYTES_LIMIT) {
+          used += r.length;
+          accepted.push(r);
+        } else {
+          skipped++;
+        }
+      });
+      state.newEntry.photos = state.newEntry.photos.concat(accepted);
+      if (skipped > 0) {
+        state.genErr = "용량 한도(" + (TOTAL_PHOTO_BYTES_LIMIT / (1024 * 1024)).toFixed(0) + "MB)를 넘어 사진 " + skipped + "장은 첨부되지 않았어요. 사진을 좀 더 작은 걸로 시도해보세요.";
+      }
+      render();
+    }).catch(function (err) {
+      state.genErr = err.message || "사진을 처리하지 못했습니다.";
+      render();
+    });
+  }
+
+  function handleGenerate() {
+    if (!state.newEntry.korean.trim()) {
+      state.genErr = "한국어 일기를 먼저 작성해주세요.";
+      render();
+      return;
+    }
+    state.genErr = "";
+    state.generating = true;
+    render();
+    callServer(state.newEntry.korean.trim(), state.newEntry.photos).then(function (result) {
+      state.result = result;
+      state.resultTab = "easy";
+      if (!state.newEntry.title.trim()) {
+        state.newEntry.title = result.youtubeTitle ? String(result.youtubeTitle).replace(/^["']|["']$/g, "") : "제목 없음";
+      }
+      state.generating = false;
+      render();
+    }).catch(function (err) {
+      state.genErr = err.message || "생성 중 문제가 발생했어요. 다시 시도해주세요.";
+      if (state.genErr.indexOf("Unauthorized") !== -1 || state.genErr.indexOf("비밀번호") !== -1) {
+        state.showSettings = true;
+      }
+      state.generating = false;
+      render();
+    });
+  }
+
+  function handleSaveEntry() {
+    if (!state.result) return;
+    state.saving = true;
+    render();
+    var entry = Object.assign({
+      id: String(Date.now()),
+      date: todayStr(),
+      title: state.newEntry.title.trim() || "제목 없음",
+      photos: state.newEntry.photos,
+      korean: state.newEntry.korean,
+      createdAt: new Date().toISOString(),
+    }, state.result);
+    state.entries = [entry].concat(state.entries);
+    saveEntries();
+    state.saving = false;
+    state.result = null;
+    state.newEntry = { title: "", korean: "", photos: [] };
+    state.view = "home";
+    render();
+  }
+
+  // ---------------------------------------------------------------------
+  // Init
+  // ---------------------------------------------------------------------
+
+  loadEntries();
+  loadSettings();
+  render();
+})();
+</script>
+</body>
+</html>

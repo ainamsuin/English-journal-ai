@@ -2,12 +2,18 @@
 // This runs on the server, never in the user's browser.
 // The Gemini API key lives only in the GEMINI_API_KEY environment variable
 // (set it in your Vercel project's Settings → Environment Variables — never
-// commit it to a file or to git).
+// commit it to a file or to git). Gemini is used for the text generation call
+// (easyEnglish, naturalEnglish, vocabulary, scenes, etc).
 //
-// Optional: set GEMINI_IMAGE_API_KEY to a different Gemini API key (e.g. from a
-// separate Google Cloud project) to use just for scene image generation, so its
-// quota is fully independent from the text-generation key's quota. If unset, the
-// main GEMINI_API_KEY is used for images too.
+// Scene images are generated separately via Cloudflare Workers AI (FLUX.1-schnell),
+// which has its own, independent free daily quota. Set these two environment
+// variables to enable it:
+//   CLOUDFLARE_ACCOUNT_ID  — your Cloudflare account ID
+//   CLOUDFLARE_API_TOKEN   — a Workers AI API token (Cloudflare dashboard → Manage
+//                            Account → Account API Tokens → "Create a Workers AI
+//                            API Token")
+// If either is missing, text generation still works — scene images are just
+// skipped with a clear per-scene error instead of failing the whole request.
 
 // Allow this function extra time on plans that support it (Hobby caps at 60s
 // regardless of this value; Pro/Enterprise can go higher). Image generation
@@ -53,16 +59,17 @@ const IMAGE_STYLE_SUFFIX = [
 ].join(" ");
 
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
-const DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image";
-const IMAGE_CONCURRENCY = 2; // lower concurrency = fewer simultaneous requests hitting per-minute quota
-const IMAGE_TIMEOUT_MS = 45_000;
+const DEFAULT_CF_IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell";
+const CF_PROMPT_MAX_LEN = 2048; // Cloudflare's flux-1-schnell prompt length limit
+const IMAGE_CONCURRENCY = 3;
+const IMAGE_TIMEOUT_MS = 30_000;
 const IMAGE_MAX_ATTEMPTS = 3;
 const IMAGE_GENERATION_BUDGET_MS = 45_000; // leaves headroom under maxDuration for the text call + response
 
 // --- very small in-memory rate limiter -------------------------------------------------
 // Note: serverless instances are ephemeral and can scale to multiple copies, so this is a
 // best-effort speed bump, not a hard guarantee. It stops a single runaway client/script
-// from burning through your Gemini quota in a tight loop.
+// from burning through your API quota in a tight loop.
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 12;
 const hits = new Map(); // key -> [timestamps]
@@ -77,6 +84,12 @@ function isRateLimited(key) {
 
 function safeModelName(name, fallback) {
   return typeof name === "string" && /^[a-zA-Z0-9._-]{1,60}$/.test(name) ? name : fallback;
+}
+
+// Cloudflare Workers AI model IDs look like "@cf/black-forest-labs/flux-1-schnell",
+// which needs slashes and an "@" allowed on top of the usual safe character set.
+function safeCFModelName(name, fallback) {
+  return typeof name === "string" && /^@[a-zA-Z0-9]+\/[a-zA-Z0-9._/-]{1,80}$/.test(name) ? name : fallback;
 }
 
 function sleep(ms) {
@@ -94,17 +107,15 @@ function extractGeminiErrorMessage(errText) {
   }
 }
 
-// Gemini's 429 body sometimes includes a suggested retry delay like
-// {"retryDelay":"21s"} inside error.details. Fall back to the Retry-After header.
-function parseRetryDelayMs(res, errText) {
-  const header = res.headers && res.headers.get && res.headers.get("retry-after");
-  if (header) {
-    const secs = parseInt(header, 10);
-    if (!isNaN(secs)) return secs * 1000;
+// Cloudflare error bodies look like {"success":false,"errors":[{"code":..,"message":".."}],...}
+function extractCloudflareErrorMessage(errText) {
+  try {
+    const parsed = JSON.parse(errText);
+    const first = parsed && Array.isArray(parsed.errors) && parsed.errors[0];
+    return (first && first.message) || errText;
+  } catch {
+    return errText;
   }
-  const m = errText.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
-  if (m) return Math.round(parseFloat(m[1]) * 1000);
-  return null;
 }
 
 // Runs `items` through `worker` with at most `limit` in flight at once.
@@ -122,9 +133,11 @@ async function runWithConcurrency(items, limit, worker) {
   return results;
 }
 
-async function generateSceneImage(apiKey, imageModel, imagePrompt, deadline) {
-  const fullPrompt = `${imagePrompt}\n\n${IMAGE_STYLE_SUFFIX}`;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${imageModel}:generateContent`;
+// Generates one scene image via Cloudflare Workers AI (FLUX.1-schnell by default).
+// Returns { image: dataURL|null, error: string|null }. Retries on 429 with backoff.
+async function generateSceneImage(accountId, apiToken, cfModel, imagePrompt, deadline) {
+  const fullPrompt = `${imagePrompt} ${IMAGE_STYLE_SUFFIX}`.slice(0, CF_PROMPT_MAX_LEN);
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${cfModel}`;
 
   let lastError = "이미지 생성 실패";
 
@@ -139,19 +152,17 @@ async function generateSceneImage(apiKey, imageModel, imagePrompt, deadline) {
     try {
       const r = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-          generationConfig: { responseModalities: ["IMAGE"] },
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiToken}` },
+        body: JSON.stringify({ prompt: fullPrompt, seed: Math.floor(Math.random() * 1_000_000) }),
         signal: controller.signal,
       });
 
       if (r.status === 429) {
         const errText = await r.text();
-        lastError = "이미지 생성 할당량(quota)을 초과했어요. Gemini API 요금제/사용량 한도를 확인해주세요. (" + extractGeminiErrorMessage(errText).slice(0, 200) + ")";
-        const retryMs = parseRetryDelayMs(r, errText);
-        const waitMs = retryMs != null ? retryMs : 1500 * attempt;
+        lastError = "이미지 생성 할당량(quota)을 초과했어요. Cloudflare Workers AI 사용량 한도를 확인해주세요. (" + extractCloudflareErrorMessage(errText).slice(0, 200) + ")";
+        const header = r.headers && r.headers.get && r.headers.get("retry-after");
+        const retrySecs = header ? parseInt(header, 10) : NaN;
+        const waitMs = !isNaN(retrySecs) ? retrySecs * 1000 : 1500 * attempt;
         if (attempt < IMAGE_MAX_ATTEMPTS && Date.now() + waitMs < deadline) {
           await sleep(waitMs);
           continue;
@@ -161,20 +172,17 @@ async function generateSceneImage(apiKey, imageModel, imagePrompt, deadline) {
 
       if (!r.ok) {
         const errText = await r.text();
-        return { image: null, error: `Gemini image error: ${extractGeminiErrorMessage(errText).slice(0, 300)}` };
+        return { image: null, error: `Cloudflare image error: ${extractCloudflareErrorMessage(errText).slice(0, 300)}` };
       }
 
       const data = await r.json();
-      const parts = data?.candidates?.[0]?.content?.parts || [];
-      const imgPart = parts.find((p) => p.inline_data || p.inlineData);
-      const inline = imgPart && (imgPart.inline_data || imgPart.inlineData);
-
-      if (!inline || !inline.data) {
-        return { image: null, error: "이미지 응답이 비어있습니다." };
+      if (!data || data.success === false || !data.result || !data.result.image) {
+        const msg = (data && Array.isArray(data.errors) && data.errors[0] && data.errors[0].message) || "이미지 응답이 비어있습니다.";
+        return { image: null, error: msg };
       }
 
-      const mimeType = inline.mime_type || inline.mimeType || "image/png";
-      return { image: `data:${mimeType};base64,${inline.data}`, error: null };
+      // Cloudflare returns a plain base64 string (no data: prefix) for flux-1-schnell.
+      return { image: `data:image/jpeg;base64,${data.result.image}`, error: null };
     } catch (e) {
       lastError = e && e.name === "AbortError" ? "이미지 생성 시간 초과" : (e && e.message) || "이미지 생성 실패";
       if (attempt < IMAGE_MAX_ATTEMPTS && Date.now() + 1000 * attempt < deadline) {
@@ -218,10 +226,11 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "서버에 GEMINI_API_KEY가 설정되어 있지 않습니다." });
     return;
   }
-  // Optional: use a separate API key (e.g. a different Google Cloud project) just for image
-  // generation, so its quota is fully independent from the text-generation key's quota.
-  // If GEMINI_IMAGE_API_KEY isn't set, we just fall back to the main GEMINI_API_KEY.
-  const imageApiKey = process.env.GEMINI_IMAGE_API_KEY || apiKey;
+
+  // Scene images use Cloudflare Workers AI, entirely separate from the Gemini text call.
+  const cfAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const cfApiToken = process.env.CLOUDFLARE_API_TOKEN;
+  const cfConfigured = Boolean(cfAccountId && cfApiToken);
 
   try {
     const { korean, photos, model, imageModel, generateImages } = req.body || {};
@@ -259,7 +268,7 @@ export default async function handler(req, res) {
 
     // Only allow a conservative model-name character set — these values are interpolated into a URL.
     const modelName = safeModelName(model, DEFAULT_TEXT_MODEL);
-    const imageModelName = safeModelName(imageModel, DEFAULT_IMAGE_MODEL);
+    const cfModelName = safeCFModelName(imageModel, DEFAULT_CF_IMAGE_MODEL);
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
     const geminiRes = await fetch(url, {
@@ -273,7 +282,7 @@ export default async function handler(req, res) {
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text();
-      res.status(geminiRes.status).json({ error: `Gemini error: ${errText.slice(0, 400)}` });
+      res.status(geminiRes.status).json({ error: `Gemini error: ${extractGeminiErrorMessage(errText).slice(0, 400)}` });
       return;
     }
 
@@ -312,19 +321,26 @@ export default async function handler(req, res) {
     }));
 
     if (shouldGenerateImages) {
-      const imageDeadline = Date.now() + IMAGE_GENERATION_BUDGET_MS;
-      const results = await runWithConcurrency(scenes, IMAGE_CONCURRENCY, (scene) =>
-        scene.imagePrompt
-          ? generateSceneImage(imageApiKey, imageModelName, scene.imagePrompt, imageDeadline)
-          : Promise.resolve({ image: null, error: "no imagePrompt" })
-      );
-      scenes = scenes.map((scene, i) => ({ ...scene, image: results[i].image, error: results[i].error }));
+      if (!cfConfigured) {
+        scenes = scenes.map((scene) => ({
+          ...scene,
+          error: "서버에 CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN이 설정되어 있지 않아 이미지를 생성할 수 없어요.",
+        }));
+      } else {
+        const imageDeadline = Date.now() + IMAGE_GENERATION_BUDGET_MS;
+        const results = await runWithConcurrency(scenes, IMAGE_CONCURRENCY, (scene) =>
+          scene.imagePrompt
+            ? generateSceneImage(cfAccountId, cfApiToken, cfModelName, scene.imagePrompt, imageDeadline)
+            : Promise.resolve({ image: null, error: "no imagePrompt" })
+        );
+        scenes = scenes.map((scene, i) => ({ ...scene, image: results[i].image, error: results[i].error }));
+      }
     }
 
     parsed.scenes = scenes;
 
     // We forward the parsed object back to the client (with images attached).
-    // The Gemini API key itself never leaves this server.
+    // Neither the Gemini API key nor the Cloudflare API token ever leave this server.
     res.status(200).json({ text: JSON.stringify(parsed) });
   } catch (e) {
     res.status(500).json({ error: (e && e.message) || "Unknown server error" });

@@ -5,6 +5,6 @@
   "type": "module",
   "description": "한국어 일기를 영어 학습 콘텐츠로 바꿔주는 AI 저널 (Gemini API 서버 프록시 구조)",
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   }
 }

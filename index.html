@@ -107,6 +107,14 @@
   .entry-meta .title { font-family: 'Noto Serif KR', serif; font-size: 15px; font-weight: 600; margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .entry-meta .snippet { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--ink-soft); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+  .scene-list { display: flex; flex-direction: column; gap: 14px; }
+  .scene-card { border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: var(--white); }
+  .scene-img-wrap { width: 100%; aspect-ratio: 4 / 3; background: var(--accent-soft); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .scene-img-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .scene-placeholder { font-size: 26px; opacity: 0.5; }
+  .scene-caption { padding: 10px 12px 4px; font-size: 13.5px; line-height: 1.75; }
+  .scene-error { padding: 0 12px 10px; font-size: 11.5px; color: var(--danger); }
+
   .err { color: var(--danger); font-size: 13px; margin-bottom: 12px; }
   .empty { padding: 40px 24px; text-align: center; }
   .empty p { font-size: 15px; color: var(--ink-soft); line-height: 1.8; }
@@ -408,6 +416,28 @@
     );
   }
 
+  function renderScenes(scenes) {
+    if (!scenes || scenes.length === 0) {
+      return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면 이미지가 없어요.</p>';
+    }
+    var cards = scenes.map(function (s) {
+      var media = s.image
+        ? '<div class="scene-img-wrap"><img src="' + s.image + '" alt="" /></div>'
+        : '<div class="scene-img-wrap"><span class="scene-placeholder">🖼</span></div>';
+      var errLine = s.image
+        ? ""
+        : '<p class="scene-error">' + escapeHtml(s.error || "이미지를 생성하지 못했어요.") + "</p>";
+      return (
+        '<div class="scene-card">' +
+          media +
+          '<p class="scene-caption kr">' + escapeHtml(s.text) + "</p>" +
+          errLine +
+        "</div>"
+      );
+    }).join("");
+    return '<div class="scene-list">' + cards + "</div>";
+  }
+
   function renderResultBlock(opts) {
     var result = opts.result, korean = opts.korean, photos = opts.photos || [], readOnly = opts.readOnly;
     var titleField = !readOnly
@@ -426,6 +456,7 @@
       { id: "expr", label: "Expressions" },
       { id: "vocab", label: "Vocabulary" },
       { id: "script", label: "Speak Script" },
+      { id: "scenes", label: "Scenes" },
     ];
     var tabsHtml = tabs.map(function (t) {
       return '<div class="tab ' + (state.resultTab === t.id ? "active" : "") + '" data-action="set-tab" data-tab="' + t.id + '">' + t.label + "</div>";
@@ -448,6 +479,8 @@
         }).join("") + "</div>";
     } else if (state.resultTab === "script") {
       body = '<p class="en" style="font-size:14.5px; line-height:2; white-space:pre-wrap;">' + escapeHtml(result.speakScript) + "</p>";
+    } else if (state.resultTab === "scenes") {
+      body = renderScenes(result.scenes);
     }
 
     var metaBlock = "";

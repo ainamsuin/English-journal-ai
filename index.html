@@ -151,7 +151,7 @@
   "use strict";
 
   var MAX_PHOTOS = Infinity; // no fixed count limit — see TOTAL_PHOTO_BYTES_LIMIT below
-  var TOTAL_PHOTO_BYTES_LIMIT = 15 * 1024 * 1024; // ~15MB of base64 data total, a safe margin under Gemini's request size limit
+  var TOTAL_PHOTO_BYTES_LIMIT = 4 * 1024 * 1024; // ~4MB — Vercel's serverless function request body is hard-capped at 4.5MB total, so this leaves headroom for the JSON wrapper, diary text, and headers
   var MAX_DIM = 900;
   var ENTRIES_KEY = "ejai_entries";
   var SETTINGS_KEY = "ejai_settings";

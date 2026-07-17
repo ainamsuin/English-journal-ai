@@ -82,7 +82,7 @@ export default async function handler(req, res) {
     const safePhotos = Array.isArray(photos) ? photos : [];
     const parts = [{ text: PROMPT_TEXT + "\n\n한국어 일기:\n" + korean }];
 
-    const TOTAL_PHOTO_BYTES_LIMIT = 15 * 1024 * 1024; // keep in sync with the client's TOTAL_PHOTO_BYTES_LIMIT
+    const TOTAL_PHOTO_BYTES_LIMIT = 4 * 1024 * 1024; // keep in sync with the client's TOTAL_PHOTO_BYTES_LIMIT — max achievable under Vercel's fixed 4.5MB request body cap
     let usedBytes = 0;
 
     for (const p of safePhotos) {

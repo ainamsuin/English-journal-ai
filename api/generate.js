@@ -49,8 +49,10 @@ const IMAGE_STYLE_SUFFIX = [
 
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
 const DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image";
-const IMAGE_CONCURRENCY = 3;
+const IMAGE_CONCURRENCY = 2; // lower concurrency = fewer simultaneous requests hitting per-minute quota
 const IMAGE_TIMEOUT_MS = 45_000;
+const IMAGE_MAX_ATTEMPTS = 3;
+const IMAGE_GENERATION_BUDGET_MS = 45_000; // leaves headroom under maxDuration for the text call + response
 
 // --- very small in-memory rate limiter -------------------------------------------------
 // Note: serverless instances are ephemeral and can scale to multiple copies, so this is a
@@ -72,6 +74,34 @@ function safeModelName(name, fallback) {
   return typeof name === "string" && /^[a-zA-Z0-9._-]{1,60}$/.test(name) ? name : fallback;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Pulls a short human-readable message out of a Gemini error body, which is
+// normally a JSON blob like {"error":{"code":429,"message":"...","status":"..."}}.
+function extractGeminiErrorMessage(errText) {
+  try {
+    const parsed = JSON.parse(errText);
+    return (parsed && parsed.error && parsed.error.message) || errText;
+  } catch {
+    return errText;
+  }
+}
+
+// Gemini's 429 body sometimes includes a suggested retry delay like
+// {"retryDelay":"21s"} inside error.details. Fall back to the Retry-After header.
+function parseRetryDelayMs(res, errText) {
+  const header = res.headers && res.headers.get && res.headers.get("retry-after");
+  if (header) {
+    const secs = parseInt(header, 10);
+    if (!isNaN(secs)) return secs * 1000;
+  }
+  const m = errText.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
+  if (m) return Math.round(parseFloat(m[1]) * 1000);
+  return null;
+}
+
 // Runs `items` through `worker` with at most `limit` in flight at once.
 async function runWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
@@ -87,46 +117,72 @@ async function runWithConcurrency(items, limit, worker) {
   return results;
 }
 
-async function generateSceneImage(apiKey, imageModel, imagePrompt) {
+async function generateSceneImage(apiKey, imageModel, imagePrompt, deadline) {
   const fullPrompt = `${imagePrompt}\n\n${IMAGE_STYLE_SUFFIX}`;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${imageModel}:generateContent`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS);
+  let lastError = "이미지 생성 실패";
 
-  try {
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-        generationConfig: { responseModalities: ["IMAGE"] },
-      }),
-      signal: controller.signal,
-    });
-
-    if (!r.ok) {
-      const errText = await r.text();
-      return { image: null, error: `Gemini image error: ${errText.slice(0, 300)}` };
+  for (let attempt = 1; attempt <= IMAGE_MAX_ATTEMPTS; attempt++) {
+    if (Date.now() >= deadline) {
+      return { image: null, error: "시간이 부족해 재시도를 중단했어요. 잠시 후 다시 시도해주세요." };
     }
 
-    const data = await r.json();
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    const imgPart = parts.find((p) => p.inline_data || p.inlineData);
-    const inline = imgPart && (imgPart.inline_data || imgPart.inlineData);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS);
 
-    if (!inline || !inline.data) {
-      return { image: null, error: "이미지 응답이 비어있습니다." };
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+          generationConfig: { responseModalities: ["IMAGE"] },
+        }),
+        signal: controller.signal,
+      });
+
+      if (r.status === 429) {
+        const errText = await r.text();
+        lastError = "이미지 생성 할당량(quota)을 초과했어요. Gemini API 요금제/사용량 한도를 확인해주세요. (" + extractGeminiErrorMessage(errText).slice(0, 200) + ")";
+        const retryMs = parseRetryDelayMs(r, errText);
+        const waitMs = retryMs != null ? retryMs : 1500 * attempt;
+        if (attempt < IMAGE_MAX_ATTEMPTS && Date.now() + waitMs < deadline) {
+          await sleep(waitMs);
+          continue;
+        }
+        return { image: null, error: lastError };
+      }
+
+      if (!r.ok) {
+        const errText = await r.text();
+        return { image: null, error: `Gemini image error: ${extractGeminiErrorMessage(errText).slice(0, 300)}` };
+      }
+
+      const data = await r.json();
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const imgPart = parts.find((p) => p.inline_data || p.inlineData);
+      const inline = imgPart && (imgPart.inline_data || imgPart.inlineData);
+
+      if (!inline || !inline.data) {
+        return { image: null, error: "이미지 응답이 비어있습니다." };
+      }
+
+      const mimeType = inline.mime_type || inline.mimeType || "image/png";
+      return { image: `data:${mimeType};base64,${inline.data}`, error: null };
+    } catch (e) {
+      lastError = e && e.name === "AbortError" ? "이미지 생성 시간 초과" : (e && e.message) || "이미지 생성 실패";
+      if (attempt < IMAGE_MAX_ATTEMPTS && Date.now() + 1000 * attempt < deadline) {
+        await sleep(1000 * attempt);
+        continue;
+      }
+      return { image: null, error: lastError };
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const mimeType = inline.mime_type || inline.mimeType || "image/png";
-    return { image: `data:${mimeType};base64,${inline.data}`, error: null };
-  } catch (e) {
-    const msg = e && e.name === "AbortError" ? "이미지 생성 시간 초과" : (e && e.message) || "이미지 생성 실패";
-    return { image: null, error: msg };
-  } finally {
-    clearTimeout(timeout);
   }
+
+  return { image: null, error: lastError };
 }
 
 export default async function handler(req, res) {
@@ -247,9 +303,10 @@ export default async function handler(req, res) {
     }));
 
     if (shouldGenerateImages) {
+      const imageDeadline = Date.now() + IMAGE_GENERATION_BUDGET_MS;
       const results = await runWithConcurrency(scenes, IMAGE_CONCURRENCY, (scene) =>
         scene.imagePrompt
-          ? generateSceneImage(apiKey, imageModelName, scene.imagePrompt)
+          ? generateSceneImage(apiKey, imageModelName, scene.imagePrompt, imageDeadline)
           : Promise.resolve({ image: null, error: "no imagePrompt" })
       );
       scenes = scenes.map((scene, i) => ({ ...scene, image: results[i].image, error: results[i].error }));

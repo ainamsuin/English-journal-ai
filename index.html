@@ -166,7 +166,7 @@
     result: null,
     saving: false,
     resultTab: "easy",
-    settings: { appSecret: "", model: "gemini-2.5-flash" },
+    settings: { appSecret: "", model: "gemini-flash-latest" },
     showSettings: false,
   };
 
@@ -256,7 +256,7 @@
   // only in the server's GEMINI_API_KEY environment variable (see /api/generate.js). This
   // page just calls our own server endpoint, which calls Gemini on our behalf.
   function callServer(korean, photos) {
-    var model = state.settings.model || "gemini-2.5-flash";
+    var model = state.settings.model || "gemini-flash-latest";
     return fetch("/api/generate", {
       method: "POST",
       headers: {
@@ -489,7 +489,7 @@
           "<h2>설정</h2>" +
           '<p class="desc">Gemini API 키는 이 화면에 입력하지 않아요 — 서버(GEMINI_API_KEY 환경변수)에만 저장되어 있고 브라우저로 절대 전달되지 않아요. 서버에 앱 비밀번호(APP_SECRET)를 설정해두었다면 아래에 입력해주세요.</p>' +
           '<div class="row"><label>앱 비밀번호 (서버에 APP_SECRET을 설정한 경우에만)</label><input class="input mono" id="settings-secret" type="password" placeholder="비밀번호" value="' + escapeHtml(state.settings.appSecret) + '" /></div>' +
-          '<div class="row"><label>모델 이름</label><input class="input mono" id="settings-model" type="text" placeholder="gemini-2.5-flash" value="' + escapeHtml(state.settings.model) + '" /></div>' +
+          '<div class="row"><label>모델 이름</label><input class="input mono" id="settings-model" type="text" placeholder="gemini-flash-latest" value="' + escapeHtml(state.settings.model) + '" /></div>' +
           '<div class="actions">' +
             '<button class="btn-ghost" data-action="close-settings">취소</button>' +
             '<button class="btn" data-action="save-settings">저장</button>' +
@@ -540,7 +540,7 @@
       render();
     } else if (action === "save-settings") {
       var secret = document.getElementById("settings-secret").value;
-      var model = document.getElementById("settings-model").value.trim() || "gemini-2.5-flash";
+      var model = document.getElementById("settings-model").value.trim() || "gemini-flash-latest";
       state.settings = { appSecret: secret, model: model };
       saveSettings();
       state.showSettings = false;

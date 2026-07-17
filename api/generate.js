@@ -102,7 +102,7 @@ export default async function handler(req, res) {
     }
 
     // Only allow a conservative model-name character set — this value is interpolated into a URL.
-    const modelName = typeof model === "string" && /^[a-zA-Z0-9._-]{1,60}$/.test(model) ? model : "gemini-2.5-flash";
+    const modelName = typeof model === "string" && /^[a-zA-Z0-9._-]{1,60}$/.test(model) ? model : "gemini-flash-latest";
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
     const geminiRes = await fetch(url, {

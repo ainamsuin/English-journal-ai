@@ -3,6 +3,11 @@
 // The Gemini API key lives only in the GEMINI_API_KEY environment variable
 // (set it in your Vercel project's Settings → Environment Variables — never
 // commit it to a file or to git).
+//
+// Optional: set GEMINI_IMAGE_API_KEY to a different Gemini API key (e.g. from a
+// separate Google Cloud project) to use just for scene image generation, so its
+// quota is fully independent from the text-generation key's quota. If unset, the
+// main GEMINI_API_KEY is used for images too.
 
 // Allow this function extra time on plans that support it (Hobby caps at 60s
 // regardless of this value; Pro/Enterprise can go higher). Image generation
@@ -213,6 +218,10 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "서버에 GEMINI_API_KEY가 설정되어 있지 않습니다." });
     return;
   }
+  // Optional: use a separate API key (e.g. a different Google Cloud project) just for image
+  // generation, so its quota is fully independent from the text-generation key's quota.
+  // If GEMINI_IMAGE_API_KEY isn't set, we just fall back to the main GEMINI_API_KEY.
+  const imageApiKey = process.env.GEMINI_IMAGE_API_KEY || apiKey;
 
   try {
     const { korean, photos, model, imageModel, generateImages } = req.body || {};
@@ -306,7 +315,7 @@ export default async function handler(req, res) {
       const imageDeadline = Date.now() + IMAGE_GENERATION_BUDGET_MS;
       const results = await runWithConcurrency(scenes, IMAGE_CONCURRENCY, (scene) =>
         scene.imagePrompt
-          ? generateSceneImage(apiKey, imageModelName, scene.imagePrompt, imageDeadline)
+          ? generateSceneImage(imageApiKey, imageModelName, scene.imagePrompt, imageDeadline)
           : Promise.resolve({ image: null, error: "no imagePrompt" })
       );
       scenes = scenes.map((scene, i) => ({ ...scene, image: results[i].image, error: results[i].error }));

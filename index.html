@@ -119,6 +119,28 @@
   .empty { padding: 40px 24px; text-align: center; }
   .empty p { font-size: 15px; color: var(--ink-soft); line-height: 1.8; }
 
+  .kb-modal { max-width: 480px; width: 100%; padding: 18px; }
+  .kb-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .kb-modal-title { font-size: 15px; font-weight: 600; margin: 0; }
+  .kb-canvas-wrap { width: 100%; aspect-ratio: 4 / 3; background: #1A2420; border-radius: 4px; overflow: hidden; position: relative; }
+  .kb-canvas-wrap canvas { width: 100%; height: 100%; display: block; }
+  .kb-controls { display: flex; align-items: center; justify-content: center; gap: 20px; margin-top: 14px; }
+  .kb-controls .icon-btn { font-size: 20px; }
+  .kb-dots { display: flex; justify-content: center; gap: 5px; margin-top: 10px; flex-wrap: wrap; max-width: 100%; }
+  .kb-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line); flex-shrink: 0; }
+  .kb-dot.active { background: var(--accent); }
+  .kb-lang-row { display: flex; gap: 6px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
+  .kb-chip { font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 6px 12px; border-radius: 14px; border: 1.5px solid var(--line); background: transparent; color: var(--ink-soft); cursor: pointer; }
+  .kb-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .kb-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+  .kb-export-status { margin-top: 16px; text-align: center; }
+  .kb-export-label { font-size: 13px; color: var(--ink-soft); margin: 0 0 8px; }
+  .kb-progress-track { width: 100%; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-bottom: 14px; }
+  .kb-progress-fill { height: 100%; background: var(--accent); width: 0%; }
+  .kb-result-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; justify-content: center; }
+  .kb-note { font-size: 11.5px; color: var(--ink-soft); margin-top: 10px; text-align: center; line-height: 1.6; }
+
+
   @keyframes dotpulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
   .typing { display: inline-flex; gap: 3px; align-items: center; }
   .typing span.dot { font-family: 'JetBrains Mono', monospace; animation: dotpulse 1.1s ease-in-out infinite; }
@@ -176,6 +198,18 @@
     resultTab: "easy",
     settings: { appSecret: "", model: "gemini-flash-latest" },
     showSettings: false,
+    player: {
+      active: false,
+      scenes: [],
+      subtitleLang: "ko", // ko | easy | natural
+      index: 0,
+      playing: false,
+      exporting: false,
+      exportDone: false,
+      exportError: "",
+      videoUrl: "",
+      videoExt: "webm",
+    },
   };
 
   function loadEntries() {
@@ -296,6 +330,13 @@
 
   var app = document.getElementById("app");
 
+  // Not part of `state` because these are live rendering handles (canvas, recorder,
+  // in-flight animation frame) rather than serializable UI state.
+  var activeResultForPlayer = null;
+  var playerCanvas = null, playerCtx = null, playerImages = [];
+  var playerRAF = null, playerElapsed = 0, playerLastTs = null;
+  var mediaRecorder = null, recordedChunks = [];
+
   function render() {
     var html = '<div class="wrap">';
     html += renderHeader();
@@ -304,6 +345,7 @@
     else if (state.view === "detail") html += renderDetail();
     html += "</div>";
     if (state.showSettings) html += renderSettingsModal();
+    if (state.player.active) html += renderPlayerModal();
     app.innerHTML = html;
     bindEvents();
   }
@@ -420,6 +462,10 @@
     if (!scenes || scenes.length === 0) {
       return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면 이미지가 없어요.</p>';
     }
+    var hasImages = scenes.some(function (s) { return !!s.image; });
+    var playBtn = hasImages
+      ? '<button class="btn" style="margin-bottom:14px;" data-action="open-player">▶ 슬라이드쇼로 보기</button>'
+      : "";
     var cards = scenes.map(function (s) {
       var media = s.image
         ? '<div class="scene-img-wrap"><img src="' + s.image + '" alt="" /></div>'
@@ -435,11 +481,12 @@
         "</div>"
       );
     }).join("");
-    return '<div class="scene-list">' + cards + "</div>";
+    return playBtn + '<div class="scene-list">' + cards + "</div>";
   }
 
   function renderResultBlock(opts) {
     var result = opts.result, korean = opts.korean, photos = opts.photos || [], readOnly = opts.readOnly;
+    activeResultForPlayer = result;
     var titleField = !readOnly
       ? '<div style="margin-bottom:16px;"><label class="field-label">제목</label>' +
         '<input class="input" id="title-input" placeholder="이 기록의 제목을 붙여주세요" value="' + escapeHtml(opts.title) + '" /></div>'
@@ -533,6 +580,395 @@
   }
 
   // ---------------------------------------------------------------------
+  // Scene player: Ken Burns slideshow, 3-language subtitles, MP4/WebM export
+  // ---------------------------------------------------------------------
+  //
+  // Rendering model: the rest of this app re-renders the whole #app innerHTML
+  // string on every state change. That approach is fine for static UI, but it
+  // would destroy the <canvas> element (and any in-flight MediaRecorder/rAF
+  // loop tied to it) on every frame if used during playback. So the player
+  // only calls the global render() at discrete transitions (open, close,
+  // start export, export finished) — every other click (play/pause, prev/
+  // next, subtitle language) mutates state and patches just the relevant DOM
+  // nodes directly, leaving the canvas untouched. The animation loop itself
+  // (stepPlayer) never calls render().
+
+  function getSceneCaption(scene, lang) {
+    if (lang === "easy") return scene.easyCaption || scene.text || "";
+    if (lang === "natural") return scene.naturalCaption || scene.text || "";
+    return scene.text || "";
+  }
+
+  function getLangLabel(lang) {
+    if (lang === "easy") return "EASY ENGLISH";
+    if (lang === "natural") return "NATURAL ENGLISH";
+    return "한국어";
+  }
+
+  function computeSceneDurationMs(caption, lang) {
+    var perChar = lang === "ko" ? 110 : 70;
+    var ms = 1200 + caption.length * perChar;
+    return Math.max(3200, Math.min(9000, ms));
+  }
+
+  function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+  }
+
+  function getKenBurnsVariant(index) {
+    var variants = [
+      { s0: 1.0, s1: 1.18, x0: 0.5, y0: 0.5, x1: 0.5, y1: 0.5 },
+      { s0: 1.18, s1: 1.0, x0: 0.4, y0: 0.4, x1: 0.6, y1: 0.6 },
+      { s0: 1.0, s1: 1.16, x0: 0.35, y0: 0.5, x1: 0.65, y1: 0.5 },
+      { s0: 1.16, s1: 1.0, x0: 0.65, y0: 0.5, x1: 0.35, y1: 0.5 },
+    ];
+    return variants[index % variants.length];
+  }
+
+  function wrapCanvasText(ctx, text, maxWidth) {
+    var words = String(text).split(/\s+/).filter(Boolean);
+    var lines = [];
+    var current = "";
+    words.forEach(function (word) {
+      var test = current ? current + " " + word : word;
+      if (ctx.measureText(test).width > maxWidth && current) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = test;
+      }
+    });
+    if (current) lines.push(current);
+    return lines;
+  }
+
+  function drawPlayerFrame(scene, t, index) {
+    if (!playerCtx || !playerCanvas) return;
+    var ctx = playerCtx;
+    var W = playerCanvas.width, H = playerCanvas.height;
+
+    ctx.fillStyle = "#1A2420";
+    ctx.fillRect(0, 0, W, H);
+
+    var img = playerImages[index];
+    if (img && img.complete && img.naturalWidth) {
+      var v = getKenBurnsVariant(index);
+      var te = easeInOutQuad(t);
+      var scale = v.s0 + (v.s1 - v.s0) * te;
+      var fx = v.x0 + (v.x1 - v.x0) * te;
+      var fy = v.y0 + (v.y1 - v.y0) * te;
+
+      var baseScale = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+      var eff = baseScale * scale;
+      var dw = img.naturalWidth * eff, dh = img.naturalHeight * eff;
+      var dx = W / 2 - img.naturalWidth * fx * eff;
+      var dy = H / 2 - img.naturalHeight * fy * eff;
+      dx = Math.min(0, Math.max(W - dw, dx));
+      dy = Math.min(0, Math.max(H - dh, dy));
+      ctx.drawImage(img, dx, dy, dw, dh);
+    }
+
+    var lang = state.player.subtitleLang;
+    var caption = getSceneCaption(scene, lang);
+    if (caption) {
+      var bandH = Math.round(H * 0.26);
+      var grad = ctx.createLinearGradient(0, H - bandH, 0, H);
+      grad.addColorStop(0, "rgba(20,24,20,0)");
+      grad.addColorStop(0.45, "rgba(20,24,20,0.65)");
+      grad.addColorStop(1, "rgba(20,24,20,0.8)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, H - bandH, W, bandH);
+
+      var pad = W * 0.06;
+      var maxWidth = W - pad * 2;
+      var isKo = lang === "ko";
+      var fontSize = Math.round(W * 0.032);
+      var fontFamily = isKo ? "'Noto Serif KR', serif" : "'JetBrains Mono', monospace";
+      ctx.font = (isKo ? "600 " : "500 ") + fontSize + "px " + fontFamily;
+      ctx.textBaseline = "alphabetic";
+
+      var lines = wrapCanvasText(ctx, caption, maxWidth).slice(0, 3);
+      var lineHeight = fontSize * 1.5;
+      var startY = H - pad * 0.9 - (lines.length - 1) * lineHeight;
+
+      ctx.font = "600 " + Math.round(W * 0.018) + "px 'JetBrains Mono', monospace";
+      ctx.fillStyle = "rgba(220, 230, 222, 0.75)";
+      ctx.fillText(getLangLabel(lang), pad, startY - lineHeight - fontSize * 0.3);
+
+      ctx.font = (isKo ? "600 " : "500 ") + fontSize + "px " + fontFamily;
+      ctx.fillStyle = "#F7F5EC";
+      lines.forEach(function (line, i) {
+        ctx.fillText(line, pad, startY + i * lineHeight);
+      });
+    }
+  }
+
+  function updatePlayerDots() {
+    var dots = document.querySelectorAll("#kb-dots .kb-dot");
+    dots.forEach(function (d, i) { d.classList.toggle("active", i === state.player.index); });
+  }
+
+  function stepPlayer(ts) {
+    if (!state.player.active) { playerRAF = null; return; }
+    if (playerLastTs === null) playerLastTs = ts;
+    var delta = ts - playerLastTs;
+    playerLastTs = ts;
+
+    var advancing = state.player.exporting || state.player.playing;
+    if (advancing) playerElapsed += delta;
+
+    var scenes = state.player.scenes;
+    var scene = scenes[state.player.index];
+    if (!scene) { playerRAF = null; return; }
+
+    var caption = getSceneCaption(scene, state.player.subtitleLang);
+    var duration = computeSceneDurationMs(caption, state.player.subtitleLang);
+    var t = Math.min(1, playerElapsed / duration);
+
+    drawPlayerFrame(scene, t, state.player.index);
+
+    if (state.player.exporting) {
+      var overall = (state.player.index + t) / scenes.length;
+      var bar = document.getElementById("kb-export-bar");
+      if (bar) bar.style.width = Math.round(overall * 100) + "%";
+      var label = document.getElementById("kb-export-label");
+      if (label) label.textContent = "녹화 중… " + Math.min(state.player.index + 1, scenes.length) + " / " + scenes.length + "장면";
+    }
+
+    if (t >= 1 && advancing) {
+      playerElapsed = 0;
+      if (state.player.index < scenes.length - 1) {
+        state.player.index++;
+        updatePlayerDots();
+      } else if (state.player.exporting) {
+        finishExportRecording();
+        return;
+      } else {
+        state.player.index = 0;
+        updatePlayerDots();
+      }
+    }
+
+    playerRAF = requestAnimationFrame(stepPlayer);
+  }
+
+  function preloadPlayerImages(scenes) {
+    playerImages = scenes.map(function () { return null; });
+    return Promise.all(scenes.map(function (s, i) {
+      return new Promise(function (resolve) {
+        if (!s.image) { resolve(); return; }
+        var img = new Image();
+        img.onload = function () { playerImages[i] = img; resolve(); };
+        img.onerror = function () { resolve(); };
+        img.src = s.image;
+      });
+    }));
+  }
+
+  function startPlayerLoop() {
+    playerCanvas = document.getElementById("kb-canvas");
+    if (!playerCanvas) return;
+    playerCtx = playerCanvas.getContext("2d");
+    if (playerRAF) cancelAnimationFrame(playerRAF);
+    playerElapsed = 0;
+    playerLastTs = null;
+    playerRAF = requestAnimationFrame(stepPlayer);
+  }
+
+  function openPlayer(scenes) {
+    var usable = (scenes || []).filter(function (s) { return !!s.image; });
+    if (usable.length === 0) return;
+    state.player = {
+      active: true,
+      scenes: usable,
+      subtitleLang: "ko",
+      index: 0,
+      playing: true,
+      exporting: false,
+      exportDone: false,
+      exportError: "",
+      videoUrl: "",
+      videoExt: "webm",
+    };
+    render();
+    var fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+    fontsReady.then(function () { return preloadPlayerImages(usable); }).then(function () {
+      if (!state.player.active) return; // closed before images finished loading
+      startPlayerLoop();
+    });
+  }
+
+  function closePlayer() {
+    if (mediaRecorder) {
+      mediaRecorder.onstop = null;
+      if (mediaRecorder.state !== "inactive") { try { mediaRecorder.stop(); } catch (e) {} }
+      mediaRecorder = null;
+    }
+    if (playerRAF) { cancelAnimationFrame(playerRAF); playerRAF = null; }
+    if (state.player.videoUrl) URL.revokeObjectURL(state.player.videoUrl);
+    state.player = { active: false, scenes: [], subtitleLang: "ko", index: 0, playing: false, exporting: false, exportDone: false, exportError: "", videoUrl: "", videoExt: "webm" };
+    playerCanvas = null; playerCtx = null; playerImages = [];
+    render();
+  }
+
+  function pickRecorderMimeType() {
+    var candidates = [
+      "video/mp4;codecs=avc1.42E01E",
+      "video/mp4",
+      "video/webm;codecs=vp9",
+      "video/webm;codecs=vp8",
+      "video/webm",
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(candidates[i])) return candidates[i];
+    }
+    return "";
+  }
+
+  function startExport() {
+    if (!state.player.active || state.player.exporting) return;
+    var mimeType = pickRecorderMimeType();
+    if (!mimeType || !window.MediaRecorder) {
+      state.player.exportError = "이 브라우저는 동영상 녹화를 지원하지 않아요. 최신 Chrome이나 Safari에서 시도해주세요.";
+      render();
+      return;
+    }
+    state.player.exporting = true;
+    state.player.exportDone = false;
+    state.player.exportError = "";
+    state.player.index = 0;
+    state.player.playing = true;
+    render(); // switches the modal into export mode — recreates the canvas, so reacquire it below
+
+    requestAnimationFrame(function () {
+      playerCanvas = document.getElementById("kb-canvas");
+      if (!playerCanvas) return;
+      playerCtx = playerCanvas.getContext("2d");
+      var stream = playerCanvas.captureStream(30);
+      recordedChunks = [];
+      try {
+        mediaRecorder = new MediaRecorder(stream, { mimeType: mimeType, videoBitsPerSecond: 4000000 });
+      } catch (e) {
+        state.player.exporting = false;
+        state.player.exportError = "녹화를 시작하지 못했어요: " + ((e && e.message) || "");
+        render();
+        return;
+      }
+      mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+      mediaRecorder.onstop = function () {
+        var blob = new Blob(recordedChunks, { type: mimeType.split(";")[0] });
+        var url = URL.createObjectURL(blob);
+        state.player.exporting = false;
+        state.player.exportDone = true;
+        state.player.videoUrl = url;
+        state.player.videoExt = mimeType.indexOf("mp4") !== -1 ? "mp4" : "webm";
+        render();
+      };
+      mediaRecorder.start();
+      playerElapsed = 0;
+      playerLastTs = null;
+      if (playerRAF) cancelAnimationFrame(playerRAF);
+      playerRAF = requestAnimationFrame(stepPlayer);
+    });
+  }
+
+  function finishExportRecording() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop(); // onstop handler above finalizes the blob + re-renders
+    }
+    if (playerRAF) { cancelAnimationFrame(playerRAF); playerRAF = null; }
+  }
+
+  function cancelExport() {
+    if (mediaRecorder) {
+      mediaRecorder.onstop = null;
+      if (mediaRecorder.state !== "inactive") { try { mediaRecorder.stop(); } catch (e) {} }
+      mediaRecorder = null;
+    }
+    if (playerRAF) { cancelAnimationFrame(playerRAF); playerRAF = null; }
+    state.player.exporting = false;
+    state.player.index = 0;
+    state.player.playing = true;
+    render();
+    requestAnimationFrame(startPlayerLoop);
+  }
+
+  function replayPlayer() {
+    state.player.exportDone = false;
+    state.player.exportError = "";
+    if (state.player.videoUrl) { URL.revokeObjectURL(state.player.videoUrl); state.player.videoUrl = ""; }
+    state.player.index = 0;
+    state.player.playing = true;
+    render();
+    requestAnimationFrame(startPlayerLoop);
+  }
+
+  function renderPlayerModal() {
+    var p = state.player;
+
+    if (p.exportDone) {
+      return (
+        '<div class="modal-backdrop">' +
+          '<div class="kb-modal card">' +
+            '<div class="kb-canvas-wrap">' +
+              '<video src="' + p.videoUrl + '" controls playsinline style="width:100%;height:100%;object-fit:contain;background:#000;"></video>' +
+            "</div>" +
+            '<div class="kb-result-actions">' +
+              '<a class="btn" href="' + p.videoUrl + '" download="scenes.' + p.videoExt + '">⬇ 다운로드 (' + p.videoExt.toUpperCase() + ")</a>" +
+              '<button class="btn-ghost" data-action="player-replay">다시 재생</button>' +
+              '<button class="btn-ghost" data-action="close-player">닫기</button>' +
+            "</div>" +
+            (p.videoExt === "webm"
+              ? '<p class="kb-note">이 브라우저는 MP4 녹화를 지원하지 않아 WebM으로 저장됐어요. 대부분의 플레이어와 SNS 업로드에서 재생 가능합니다.</p>'
+              : "") +
+          "</div>" +
+        "</div>"
+      );
+    }
+
+    var dots = p.scenes.map(function (_, i) {
+      return '<span class="kb-dot' + (i === p.index ? " active" : "") + '" data-dot></span>';
+    }).join("");
+
+    var langChips = [["ko", "한국어"], ["easy", "Easy English"], ["natural", "Natural English"]].map(function (pair) {
+      return '<button class="kb-chip' + (p.subtitleLang === pair[0] ? " active" : "") + '" data-action="player-set-lang" data-lang="' + pair[0] + '" ' + (p.exporting ? "disabled" : "") + ">" + pair[1] + "</button>";
+    }).join("");
+
+    var controls = p.exporting
+      ? (
+          '<div class="kb-export-status">' +
+            '<p id="kb-export-label" class="kb-export-label">녹화 중… 1 / ' + p.scenes.length + "장면</p>" +
+            '<div class="kb-progress-track"><div id="kb-export-bar" class="kb-progress-fill" style="width:0%"></div></div>' +
+            '<button class="btn-ghost" data-action="player-cancel-export">취소</button>' +
+          "</div>"
+        )
+      : (
+          '<div class="kb-controls">' +
+            '<button class="icon-btn" data-action="player-prev" aria-label="이전 장면">⏮</button>' +
+            '<button class="icon-btn" id="kb-playpause" data-action="player-toggle-play" aria-label="재생/일시정지">' + (p.playing ? "⏸" : "▶") + "</button>" +
+            '<button class="icon-btn" data-action="player-next" aria-label="다음 장면">⏭</button>' +
+          "</div>" +
+          '<div class="kb-dots" id="kb-dots">' + dots + "</div>" +
+          '<div class="kb-lang-row">' + langChips + "</div>" +
+          (p.exportError ? '<p class="err" style="margin-top:10px;">' + escapeHtml(p.exportError) + "</p>" : "") +
+          '<button class="btn" style="margin-top:14px; width:100%; justify-content:center;" data-action="player-export">🎬 MP4로 내보내기</button>'
+        );
+
+    return (
+      '<div class="modal-backdrop">' +
+        '<div class="kb-modal card">' +
+          '<div class="kb-modal-head">' +
+            '<p class="kb-modal-title kr">장면 재생</p>' +
+            '<button class="icon-btn" data-action="close-player" aria-label="닫기">✕</button>' +
+          "</div>" +
+          '<div class="kb-canvas-wrap"><canvas id="kb-canvas" width="960" height="720"></canvas></div>' +
+          controls +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  // ---------------------------------------------------------------------
   // Events
   // ---------------------------------------------------------------------
 
@@ -608,6 +1044,33 @@
       state.activeEntry = null;
       state.view = "home";
       render();
+    } else if (action === "open-player") {
+      openPlayer(activeResultForPlayer ? activeResultForPlayer.scenes : []);
+    } else if (action === "close-player") {
+      closePlayer();
+    } else if (action === "player-toggle-play") {
+      state.player.playing = !state.player.playing;
+      var playBtn = document.getElementById("kb-playpause");
+      if (playBtn) playBtn.textContent = state.player.playing ? "⏸" : "▶";
+    } else if (action === "player-prev") {
+      state.player.index = (state.player.index - 1 + state.player.scenes.length) % state.player.scenes.length;
+      playerElapsed = 0; playerLastTs = null;
+      updatePlayerDots();
+    } else if (action === "player-next") {
+      state.player.index = (state.player.index + 1) % state.player.scenes.length;
+      playerElapsed = 0; playerLastTs = null;
+      updatePlayerDots();
+    } else if (action === "player-set-lang") {
+      state.player.subtitleLang = target.getAttribute("data-lang");
+      document.querySelectorAll('[data-action="player-set-lang"]').forEach(function (el) {
+        el.classList.toggle("active", el.getAttribute("data-lang") === state.player.subtitleLang);
+      });
+    } else if (action === "player-export") {
+      startExport();
+    } else if (action === "player-cancel-export") {
+      cancelExport();
+    } else if (action === "player-replay") {
+      replayPlayer();
     }
   }
 

@@ -35,12 +35,12 @@ const PROMPT_TEXT = [
   '  "speakScript": "a 30-60 second first-person spoken script in English, suitable for reading aloud on camera, starting with a casual greeting like \'Hi everyone.\'",',
   '  "youtubeTitle": "a short catchy title for a vlog/short based on this entry",',
   '  "hashtags": ["5 short hashtag strings without the # symbol"],',
-  '  "scenes": [{"text": "the exact sentence(s) from the diary this scene covers", "imagePrompt": "a concrete, specific English description of the subject, setting, action and mood of this single scene, written for an image-generation model — describe WHAT is depicted, not an art style"}]',
+  '  "scenes": [{"text": "the exact original Korean sentence(s) from the diary this scene covers", "easyCaption": "a short, simple English translation of just this scene, matching the tone/level of easyEnglish (A2 level)", "naturalCaption": "a natural, fluent English translation of just this scene, matching the tone of naturalEnglish", "imagePrompt": "a concrete, specific English description of the subject, setting, action and mood of this single scene, written for an image-generation model — describe WHAT is depicted, not an art style"}]',
   "}",
   "",
   "Keep vocabulary to 5-8 entries. Base everything on the specific content of the diary (and photos if provided) — be concrete, not generic.",
   "",
-  "For \"scenes\": break the diary into a sequence of situations, in order, covering the whole entry. As a general rule, use one scene per sentence, but when two or more consecutive sentences describe a single continuous situation, merge them into one scene instead of repeating near-duplicate images. Each imagePrompt must describe only the concrete content of that moment (people, objects, setting, action, mood) — do not mention art style, medium, or color palette; that will be applied separately.",
+  "For \"scenes\": break the diary into a sequence of situations, in order, covering the whole entry. As a general rule, use one scene per sentence, but when two or more consecutive sentences describe a single continuous situation, merge them into one scene instead of repeating near-duplicate images. \"easyCaption\" and \"naturalCaption\" must translate ONLY that scene's Korean text (not the whole diary) — keep them short enough to read comfortably as a video subtitle (roughly one short sentence). Each imagePrompt must describe only the concrete content of that moment (people, objects, setting, action, mood) — do not mention art style, medium, or color palette; that will be applied separately.",
 ].join("\n");
 
 // A single shared visual style, applied to every generated image so the whole set
@@ -315,6 +315,8 @@ export default async function handler(req, res) {
 
     let scenes = rawScenes.map((s) => ({
       text: typeof s?.text === "string" ? s.text : "",
+      easyCaption: typeof s?.easyCaption === "string" ? s.easyCaption : "",
+      naturalCaption: typeof s?.naturalCaption === "string" ? s.naturalCaption : "",
       imagePrompt: typeof s?.imagePrompt === "string" ? s.imagePrompt : "",
       image: null,
       error: null,

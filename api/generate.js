@@ -5,7 +5,8 @@
 // commit it to a file or to git). Gemini is used for the text generation call
 // (easyEnglish, naturalEnglish, vocabulary, scenes, etc).
 //
-// Scene images are generated separately via Cloudflare Workers AI (FLUX.1-schnell),
+// Scene images are generated separately via Cloudflare Workers AI (SDXL-Lightning,
+// which supports explicit width/height — scenes are generated at 1280x720),
 // which has its own, independent free daily quota. Set these two environment
 // variables to enable it:
 //   CLOUDFLARE_ACCOUNT_ID  — your Cloudflare account ID
@@ -59,8 +60,10 @@ const IMAGE_STYLE_SUFFIX = [
 ].join(" ");
 
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
-const DEFAULT_CF_IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell";
-const CF_PROMPT_MAX_LEN = 2048; // Cloudflare's flux-1-schnell prompt length limit
+const DEFAULT_CF_IMAGE_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning";
+const SCENE_IMAGE_WIDTH = 1280;
+const SCENE_IMAGE_HEIGHT = 720;
+const CF_PROMPT_MAX_LEN = 2048; // conservative cap shared across Cloudflare image models
 const IMAGE_CONCURRENCY = 3;
 const IMAGE_TIMEOUT_MS = 30_000;
 const IMAGE_MAX_ATTEMPTS = 3;
@@ -133,7 +136,7 @@ async function runWithConcurrency(items, limit, worker) {
   return results;
 }
 
-// Generates one scene image via Cloudflare Workers AI (FLUX.1-schnell by default).
+// Generates one scene image via Cloudflare Workers AI at a fixed 1280x720 resolution.
 // Returns { image: dataURL|null, error: string|null }. Retries on 429 with backoff.
 async function generateSceneImage(accountId, apiToken, cfModel, imagePrompt, deadline) {
   const fullPrompt = `${imagePrompt} ${IMAGE_STYLE_SUFFIX}`.slice(0, CF_PROMPT_MAX_LEN);
@@ -153,7 +156,14 @@ async function generateSceneImage(accountId, apiToken, cfModel, imagePrompt, dea
       const r = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiToken}` },
-        body: JSON.stringify({ prompt: fullPrompt, seed: Math.floor(Math.random() * 1_000_000) }),
+        body: JSON.stringify({
+          prompt: fullPrompt,
+          negative_prompt: "text, letters, words, watermark, logo, signature, blurry, distorted, photorealistic, 3d render",
+          width: SCENE_IMAGE_WIDTH,
+          height: SCENE_IMAGE_HEIGHT,
+          num_steps: 8,
+          seed: Math.floor(Math.random() * 1_000_000),
+        }),
         signal: controller.signal,
       });
 
@@ -175,13 +185,22 @@ async function generateSceneImage(accountId, apiToken, cfModel, imagePrompt, dea
         return { image: null, error: `Cloudflare image error: ${extractCloudflareErrorMessage(errText).slice(0, 300)}` };
       }
 
+      // Cloudflare's REST API usually wraps image output as base64 inside JSON
+      // ({ result: { image: "..." } }), but some models return the raw image
+      // bytes directly with an image/* content-type. Handle both.
+      const contentType = (r.headers.get("content-type") || "").toLowerCase();
+      if (contentType.startsWith("image/")) {
+        const buf = Buffer.from(await r.arrayBuffer());
+        return { image: `data:${contentType.split(";")[0]};base64,${buf.toString("base64")}`, error: null };
+      }
+
       const data = await r.json();
       if (!data || data.success === false || !data.result || !data.result.image) {
         const msg = (data && Array.isArray(data.errors) && data.errors[0] && data.errors[0].message) || "이미지 응답이 비어있습니다.";
         return { image: null, error: msg };
       }
 
-      // Cloudflare returns a plain base64 string (no data: prefix) for flux-1-schnell.
+      // Some Cloudflare image models return a plain base64 string (no data: prefix).
       return { image: `data:image/jpeg;base64,${data.result.image}`, error: null };
     } catch (e) {
       lastError = e && e.name === "AbortError" ? "이미지 생성 시간 초과" : (e && e.message) || "이미지 생성 실패";

@@ -341,7 +341,7 @@
   var activeResultForPlayer = null;
   var playerCanvas = null, playerCtx = null, playerImages = [];
   var playerRAF = null, playerElapsed = 0, playerLastTs = null;
-  var mediaRecorder = null, recordedChunks = [];
+  var mediaRecorder = null, recordedChunks = [], exportedVideoBlob = null;
   var audioCtx = null, audioMasterGain = null, audioDestNode = null;
   var audioScheduler = null, audioNextPadTime = 0, audioNextPluckTime = 0;
   var audioMuted = false;
@@ -509,30 +509,49 @@
   // successfully generated image, plus "flashcard" slides for expressions/vocabulary
   // (no AI image needed — these are drawn as typographic cards, so they cost nothing
   // extra to generate and are always available even if scene image generation failed).
-  function buildPlayableScenes(result) {
+  function buildPhotoScenes(result) {
     var list = [];
     (result.scenes || []).forEach(function (s) {
       if (s && s.image) {
         list.push({ kind: "photo", text: s.text, easyCaption: s.easyCaption, naturalCaption: s.naturalCaption, image: s.image });
       }
     });
-    (result.expressions || []).forEach(function (e) {
-      var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
-      var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
-      if (phrase) list.push({ kind: "expr", headline: phrase, sub: meaning });
-    });
-    (result.vocabulary || []).forEach(function (v) {
-      if (v && v.word) list.push({ kind: "vocab", headline: v.word, sub: v.meaning || "" });
-    });
-    (result.koreanExpressions || []).forEach(function (e) {
-      var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
-      var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
-      if (phrase) list.push({ kind: "kr-expr", headline: phrase, sub: meaning });
-    });
-    (result.koreanVocabulary || []).forEach(function (v) {
-      if (v && v.word) list.push({ kind: "kr-vocab", headline: v.word, sub: v.meaning || "" });
-    });
     return list;
+  }
+
+  // lang === "ko" -> only Korean expr/vocab flashcards. lang === "easy"/"natural" -> only
+  // English expr/vocab flashcards. lang == null -> everything (used by the static Scenes tab,
+  // which has no language selector and should just show all of it for browsing).
+  function buildFlashcards(result, lang) {
+    var list = [];
+    var includeEnglish = lang == null || lang === "easy" || lang === "natural";
+    var includeKorean = lang == null || lang === "ko";
+
+    if (includeEnglish) {
+      (result.expressions || []).forEach(function (e) {
+        var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
+        var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
+        if (phrase) list.push({ kind: "expr", headline: phrase, sub: meaning });
+      });
+      (result.vocabulary || []).forEach(function (v) {
+        if (v && v.word) list.push({ kind: "vocab", headline: v.word, sub: v.meaning || "" });
+      });
+    }
+    if (includeKorean) {
+      (result.koreanExpressions || []).forEach(function (e) {
+        var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
+        var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
+        if (phrase) list.push({ kind: "kr-expr", headline: phrase, sub: meaning });
+      });
+      (result.koreanVocabulary || []).forEach(function (v) {
+        if (v && v.word) list.push({ kind: "kr-vocab", headline: v.word, sub: v.meaning || "" });
+      });
+    }
+    return list;
+  }
+
+  function buildPlayableScenes(result, lang) {
+    return buildPhotoScenes(result).concat(buildFlashcards(result, lang));
   }
 
   function renderScenes(result) {
@@ -543,7 +562,7 @@
       return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면이 없어요.</p>';
     }
 
-    var playable = buildPlayableScenes(result);
+    var playable = buildPlayableScenes(result, null);
     var playBtn = playable.length > 0
       ? '<button class="btn" style="margin-bottom:14px;" data-action="open-player">▶ 슬라이드쇼로 보기</button>'
       : "";
@@ -870,9 +889,25 @@
     }
   }
 
+  function renderDotsMarkup(count, activeIndex) {
+    var html = "";
+    for (var i = 0; i < count; i++) {
+      html += '<span class="kb-dot' + (i === activeIndex ? " active" : "") + '" data-dot></span>';
+    }
+    return html;
+  }
+
   function updatePlayerDots() {
     var dots = document.querySelectorAll("#kb-dots .kb-dot");
     dots.forEach(function (d, i) { d.classList.toggle("active", i === state.player.index); });
+  }
+
+  // Used when the number of scenes itself changes (switching subtitle language changes
+  // which flashcards are included), since updatePlayerDots() above only toggles the
+  // active class on however many dot elements already exist in the DOM.
+  function rebuildPlayerDots() {
+    var container = document.getElementById("kb-dots");
+    if (container) container.innerHTML = renderDotsMarkup(state.player.scenes.length, state.player.index);
   }
 
   function stepPlayer(ts) {
@@ -970,7 +1005,7 @@
 
       var filter = audioCtx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.value = 1800;
+      filter.frequency.value = 3400;
 
       audioDestNode = audioCtx.createMediaStreamDestination();
       audioMasterGain.connect(filter);
@@ -993,25 +1028,25 @@
     var lookahead = 2.0;
     while (audioNextPadTime < now + lookahead) {
       playAmbientPad(audioNextPadTime);
-      audioNextPadTime += 9 + Math.random() * 4;
+      audioNextPadTime += 7 + Math.random() * 3;
     }
     while (audioNextPluckTime < now + lookahead) {
       playAmbientPluck(audioNextPluckTime);
-      audioNextPluckTime += 3 + Math.random() * 4;
+      audioNextPluckTime += 2 + Math.random() * 2.5;
     }
   }
 
   function playAmbientPad(startTime) {
-    var root = PENTATONIC[Math.floor(Math.random() * 3)] / 2; // low, warm root
-    var dur = 11;
+    var root = PENTATONIC[Math.floor(Math.random() * 3)]; // brighter register (no octave-down)
+    var dur = 8;
     [root, root * 1.5, root * 2].forEach(function (freq, i) {
       var osc = audioCtx.createOscillator();
-      osc.type = "sine";
+      osc.type = i === 2 ? "triangle" : "sine"; // top voice gets a touch more harmonic sparkle
       osc.frequency.value = freq;
       var g = audioCtx.createGain();
-      var peak = 0.06 - i * 0.015;
+      var peak = 0.07 - i * 0.014;
       g.gain.setValueAtTime(0, startTime);
-      g.gain.linearRampToValueAtTime(peak, startTime + dur * 0.35);
+      g.gain.linearRampToValueAtTime(peak, startTime + dur * 0.3);
       g.gain.linearRampToValueAtTime(0, startTime + dur);
       osc.connect(g);
       g.connect(audioMasterGain);
@@ -1021,18 +1056,19 @@
   }
 
   function playAmbientPluck(startTime) {
-    var freq = PENTATONIC[Math.floor(Math.random() * PENTATONIC.length)];
+    var octaveUp = Math.random() < 0.4 ? 2 : 1;
+    var freq = PENTATONIC[Math.floor(Math.random() * PENTATONIC.length)] * octaveUp;
     var osc = audioCtx.createOscillator();
     osc.type = "triangle";
     osc.frequency.value = freq;
     var g = audioCtx.createGain();
     g.gain.setValueAtTime(0, startTime);
-    g.gain.linearRampToValueAtTime(0.09, startTime + 0.03);
-    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 2.5);
+    g.gain.linearRampToValueAtTime(0.12, startTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 2.0);
     osc.connect(g);
     g.connect(audioMasterGain);
     osc.start(startTime);
-    osc.stop(startTime + 2.6);
+    osc.stop(startTime + 2.1);
   }
 
   // A brighter, more prominent chime played right on scene transitions (as opposed to
@@ -1099,12 +1135,14 @@
   }
 
   function openPlayer(result) {
-    var usable = buildPlayableScenes(result || {});
+    var initialLang = "ko";
+    var usable = buildPlayableScenes(result || {}, initialLang);
+    if (usable.length === 0) usable = buildPlayableScenes(result || {}, null);
     if (usable.length === 0) return;
     state.player = {
       active: true,
       scenes: usable,
-      subtitleLang: "ko",
+      subtitleLang: initialLang,
       index: 0,
       playing: true,
       exporting: false,
@@ -1132,6 +1170,7 @@
     if (playerRAF) { cancelAnimationFrame(playerRAF); playerRAF = null; }
     stopPlayerAudio();
     if (state.player.videoUrl) URL.revokeObjectURL(state.player.videoUrl);
+    exportedVideoBlob = null;
     state.player = { active: false, scenes: [], subtitleLang: "ko", index: 0, playing: false, exporting: false, exportDone: false, exportError: "", videoUrl: "", videoExt: "webm", muted: audioMuted };
     playerCanvas = null; playerCtx = null; playerImages = [];
     render();
@@ -1192,6 +1231,7 @@
       mediaRecorder.onstop = function () {
         var blob = new Blob(recordedChunks, { type: mimeType.split(";")[0] });
         var url = URL.createObjectURL(blob);
+        exportedVideoBlob = blob;
         state.player.exporting = false;
         state.player.exportDone = true;
         state.player.videoUrl = url;
@@ -1232,6 +1272,7 @@
     state.player.exportDone = false;
     state.player.exportError = "";
     if (state.player.videoUrl) { URL.revokeObjectURL(state.player.videoUrl); state.player.videoUrl = ""; }
+    exportedVideoBlob = null;
     state.player.index = 0;
     state.player.playing = true;
     transitionNoteIndex = 0;
@@ -1239,10 +1280,34 @@
     requestAnimationFrame(startPlayerLoop);
   }
 
+  function shareExportedVideo() {
+    if (!exportedVideoBlob) return;
+    var mime = state.player.videoExt === "mp4" ? "video/mp4" : "video/webm";
+    var filename = "scenes." + state.player.videoExt;
+    try {
+      var file = new File([exportedVideoBlob], filename, { type: mime });
+      if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+        state.player.exportError = "이 브라우저는 동영상 공유를 지원하지 않아요. 다운로드 버튼을 사용해주세요.";
+        render();
+        return;
+      }
+      navigator.share({ files: [file], title: "장면 슬라이드쇼" }).catch(function () {
+        // Silently ignore — this also fires when the user just cancels the share sheet.
+      });
+    } catch (e) {
+      state.player.exportError = "공유 중 문제가 발생했어요: " + ((e && e.message) || "");
+      render();
+    }
+  }
+
   function renderPlayerModal() {
     var p = state.player;
 
     if (p.exportDone) {
+      var canShareVideo = typeof navigator !== "undefined" && !!navigator.share;
+      var shareBtn = canShareVideo
+        ? '<button class="btn" data-action="player-share-video">📤 공유/저장하기</button>'
+        : "";
       return (
         '<div class="modal-backdrop">' +
           '<div class="kb-modal card">' +
@@ -1250,10 +1315,15 @@
               '<video src="' + p.videoUrl + '" controls playsinline style="width:100%;height:100%;object-fit:contain;background:#000;"></video>' +
             "</div>" +
             '<div class="kb-result-actions">' +
-              '<a class="btn" href="' + p.videoUrl + '" download="scenes.' + p.videoExt + '">⬇ 다운로드 (' + p.videoExt.toUpperCase() + ")</a>" +
+              shareBtn +
+              '<a class="' + (canShareVideo ? "btn-ghost" : "btn") + '" href="' + p.videoUrl + '" download="scenes.' + p.videoExt + '">⬇ 다운로드 (' + p.videoExt.toUpperCase() + ")</a>" +
               '<button class="btn-ghost" data-action="player-replay">다시 재생</button>' +
               '<button class="btn-ghost" data-action="close-player">닫기</button>' +
             "</div>" +
+            (p.exportError ? '<p class="err" style="margin-top:10px;">' + escapeHtml(p.exportError) + "</p>" : "") +
+            (canShareVideo
+              ? '<p class="kb-note">Safari 등 일부 브라우저는 다운로드 버튼이 바로 동작하지 않을 수 있어요 — 그럴 땐 공유 버튼을 눌러 "비디오 저장"을 선택해주세요.</p>'
+              : "") +
             (p.videoExt === "webm"
               ? '<p class="kb-note">이 브라우저는 MP4 녹화를 지원하지 않아 WebM으로 저장됐어요. 대부분의 플레이어와 SNS 업로드에서 재생 가능합니다.</p>'
               : "") +
@@ -1262,9 +1332,7 @@
       );
     }
 
-    var dots = p.scenes.map(function (_, i) {
-      return '<span class="kb-dot' + (i === p.index ? " active" : "") + '" data-dot></span>';
-    }).join("");
+    var dots = renderDotsMarkup(p.scenes.length, p.index);
 
     var langChips = [["ko", "한국어"], ["easy", "Easy English"], ["natural", "Natural English"]].map(function (pair) {
       return '<button class="kb-chip' + (p.subtitleLang === pair[0] ? " active" : "") + '" data-action="player-set-lang" data-lang="' + pair[0] + '" ' + (p.exporting ? "disabled" : "") + ">" + pair[1] + "</button>";
@@ -1404,14 +1472,27 @@
       updatePlayerDots();
       if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
     } else if (action === "player-set-lang") {
-      state.player.subtitleLang = target.getAttribute("data-lang");
+      var newLang = target.getAttribute("data-lang");
+      state.player.subtitleLang = newLang;
       document.querySelectorAll('[data-action="player-set-lang"]').forEach(function (el) {
-        el.classList.toggle("active", el.getAttribute("data-lang") === state.player.subtitleLang);
+        el.classList.toggle("active", el.getAttribute("data-lang") === newLang);
       });
+      if (activeResultForPlayer) {
+        var rebuilt = buildPlayableScenes(activeResultForPlayer, newLang);
+        if (rebuilt.length > 0) {
+          state.player.scenes = rebuilt;
+          while (playerImages.length < rebuilt.length) playerImages.push(null);
+          if (state.player.index >= rebuilt.length) state.player.index = rebuilt.length - 1;
+          playerElapsed = 0; playerLastTs = null;
+          rebuildPlayerDots();
+        }
+      }
     } else if (action === "player-export") {
       startExport();
     } else if (action === "player-cancel-export") {
       cancelExport();
+    } else if (action === "player-share-video") {
+      shareExportedVideo();
     } else if (action === "player-replay") {
       replayPlayer();
     }

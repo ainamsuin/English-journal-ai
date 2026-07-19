@@ -115,6 +115,11 @@
   .scene-caption { padding: 10px 12px 4px; font-size: 13.5px; line-height: 1.75; }
   .scene-error { padding: 0 12px 10px; font-size: 11.5px; color: var(--danger); }
 
+  .flash-card { padding: 26px 18px; text-align: center; background: var(--paper); }
+  .flash-tag { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.4px; color: var(--accent); margin: 0 0 10px; font-weight: 600; }
+  .flash-headline { font-size: 18px; font-weight: 700; margin: 0 0 6px; }
+  .flash-sub { font-size: 13.5px; color: var(--ink-soft); margin: 0; line-height: 1.6; }
+
   .err { color: var(--danger); font-size: 13px; margin-bottom: 12px; }
   .empty { padding: 40px 24px; text-align: center; }
   .empty p { font-size: 15px; color: var(--ink-soft); line-height: 1.8; }
@@ -209,6 +214,7 @@
       exportError: "",
       videoUrl: "",
       videoExt: "webm",
+      muted: false,
     },
   };
 
@@ -336,6 +342,10 @@
   var playerCanvas = null, playerCtx = null, playerImages = [];
   var playerRAF = null, playerElapsed = 0, playerLastTs = null;
   var mediaRecorder = null, recordedChunks = [];
+  var audioCtx = null, audioMasterGain = null, audioDestNode = null;
+  var audioScheduler = null, audioNextPadTime = 0, audioNextPluckTime = 0;
+  var audioMuted = false;
+  var transitionNoteIndex = 0;
 
   function render() {
     var html = '<div class="wrap">';
@@ -458,15 +468,87 @@
     );
   }
 
-  function renderScenes(scenes) {
-    if (!scenes || scenes.length === 0) {
-      return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면 이미지가 없어요.</p>';
+  function renderExpressionList(list, phraseClass, meaningClass) {
+    var items = list || [];
+    if (items.length === 0) {
+      return '<p style="font-size:13px; color:var(--ink-soft);">추출된 표현이 없어요.</p>';
     }
-    var hasImages = scenes.some(function (s) { return !!s.image; });
-    var playBtn = hasImages
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      items.map(function (e) {
+        // Backward-compatible with entries saved before "meaning" was added (plain string array).
+        var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
+        var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
+        return (
+          '<div style="border-bottom:1px dashed var(--line); padding-bottom:10px;">' +
+            '<span class="' + phraseClass + '" style="font-weight:600; font-size:14.5px;">' + escapeHtml(phrase) + "</span>" +
+            (meaning ? '<p class="' + meaningClass + '" style="font-size:13px; color:var(--ink-soft); margin:4px 0 0;">' + escapeHtml(meaning) + "</p>" : "") +
+          "</div>"
+        );
+      }).join("") +
+    "</div>";
+  }
+
+  function renderVocabList(list, wordClass, meaningClass) {
+    var items = list || [];
+    if (items.length === 0) {
+      return '<p style="font-size:13px; color:var(--ink-soft);">항목이 없어요.</p>';
+    }
+    return '<div style="display:flex; flex-direction:column; gap:10px;">' +
+      items.map(function (v) {
+        return (
+          '<div style="display:flex; justify-content:space-between; gap:12px; border-bottom:1px dashed var(--line); padding-bottom:8px;">' +
+            '<span class="' + wordClass + '" style="font-weight:600; font-size:14px;">' + escapeHtml(v.word) + "</span>" +
+            '<span class="' + meaningClass + '" style="font-size:13.5px; color:var(--ink-soft); text-align:right;">' + escapeHtml(v.meaning) + "</span>" +
+          "</div>"
+        );
+      }).join("") +
+    "</div>";
+  }
+
+  // Builds the list actually usable in the slideshow/player: diary scenes that got a
+  // successfully generated image, plus "flashcard" slides for expressions/vocabulary
+  // (no AI image needed — these are drawn as typographic cards, so they cost nothing
+  // extra to generate and are always available even if scene image generation failed).
+  function buildPlayableScenes(result) {
+    var list = [];
+    (result.scenes || []).forEach(function (s) {
+      if (s && s.image) {
+        list.push({ kind: "photo", text: s.text, easyCaption: s.easyCaption, naturalCaption: s.naturalCaption, image: s.image });
+      }
+    });
+    (result.expressions || []).forEach(function (e) {
+      var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
+      var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
+      if (phrase) list.push({ kind: "expr", headline: phrase, sub: meaning });
+    });
+    (result.vocabulary || []).forEach(function (v) {
+      if (v && v.word) list.push({ kind: "vocab", headline: v.word, sub: v.meaning || "" });
+    });
+    (result.koreanExpressions || []).forEach(function (e) {
+      var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
+      var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
+      if (phrase) list.push({ kind: "kr-expr", headline: phrase, sub: meaning });
+    });
+    (result.koreanVocabulary || []).forEach(function (v) {
+      if (v && v.word) list.push({ kind: "kr-vocab", headline: v.word, sub: v.meaning || "" });
+    });
+    return list;
+  }
+
+  function renderScenes(result) {
+    var scenes = result.scenes || [];
+    var expressions = result.expressions || [];
+    var vocabulary = result.vocabulary || [];
+    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0) {
+      return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면이 없어요.</p>';
+    }
+
+    var playable = buildPlayableScenes(result);
+    var playBtn = playable.length > 0
       ? '<button class="btn" style="margin-bottom:14px;" data-action="open-player">▶ 슬라이드쇼로 보기</button>'
       : "";
-    var cards = scenes.map(function (s) {
+
+    var sceneCards = scenes.map(function (s) {
       var media = s.image
         ? '<div class="scene-img-wrap"><img src="' + s.image + '" alt="" /></div>'
         : '<div class="scene-img-wrap"><span class="scene-placeholder">🖼</span></div>';
@@ -481,7 +563,26 @@
         "</div>"
       );
     }).join("");
-    return playBtn + '<div class="scene-list">' + cards + "</div>";
+
+    var flashCards = playable.filter(function (s) { return s.kind !== "photo"; }).map(function (s) {
+      var isKr = s.kind === "kr-expr" || s.kind === "kr-vocab";
+      var tagLabel =
+        s.kind === "expr" ? "EXPRESSION · 표현" :
+        s.kind === "vocab" ? "VOCABULARY · 단어" :
+        s.kind === "kr-expr" ? "한국어 표현 · KOREAN" :
+        "한국어 단어 · KOREAN";
+      var headlineClass = isKr ? "kr" : "en";
+      var subClass = isKr ? "en" : "kr";
+      return (
+        '<div class="scene-card flash-card">' +
+          '<p class="flash-tag en">' + tagLabel + "</p>" +
+          '<p class="flash-headline ' + headlineClass + '">' + escapeHtml(s.headline) + "</p>" +
+          (s.sub ? '<p class="flash-sub ' + subClass + '">' + escapeHtml(s.sub) + "</p>" : "") +
+        "</div>"
+      );
+    }).join("");
+
+    return playBtn + '<div class="scene-list">' + sceneCards + flashCards + "</div>";
   }
 
   function renderResultBlock(opts) {
@@ -502,6 +603,8 @@
       { id: "natural", label: "Natural English" },
       { id: "expr", label: "Expressions" },
       { id: "vocab", label: "Vocabulary" },
+      { id: "kr-expr", label: "한국어 표현" },
+      { id: "kr-vocab", label: "한국어 단어" },
       { id: "script", label: "Speak Script" },
       { id: "scenes", label: "Scenes" },
     ];
@@ -515,19 +618,17 @@
     } else if (state.resultTab === "natural") {
       body = '<p class="en" style="font-size:15px; line-height:1.9; white-space:pre-wrap;">' + escapeHtml(result.naturalEnglish) + "</p>";
     } else if (state.resultTab === "expr") {
-      body = (result.expressions || []).map(function (e) { return '<span class="chip">' + escapeHtml(e) + "</span>"; }).join("");
+      body = renderExpressionList(result.expressions, "en", "kr");
     } else if (state.resultTab === "vocab") {
-      body = '<div style="display:flex; flex-direction:column; gap:10px;">' +
-        (result.vocabulary || []).map(function (v) {
-          return '<div style="display:flex; justify-content:space-between; border-bottom:1px dashed var(--line); padding-bottom:8px;">' +
-            '<span class="en" style="font-weight:600; font-size:14px;">' + escapeHtml(v.word) + "</span>" +
-            '<span class="kr" style="font-size:13.5px; color:var(--ink-soft);">' + escapeHtml(v.meaning) + "</span>" +
-          "</div>";
-        }).join("") + "</div>";
+      body = renderVocabList(result.vocabulary, "en", "kr");
+    } else if (state.resultTab === "kr-expr") {
+      body = renderExpressionList(result.koreanExpressions, "kr", "en");
+    } else if (state.resultTab === "kr-vocab") {
+      body = renderVocabList(result.koreanVocabulary, "kr", "en");
     } else if (state.resultTab === "script") {
       body = '<p class="en" style="font-size:14.5px; line-height:2; white-space:pre-wrap;">' + escapeHtml(result.speakScript) + "</p>";
     } else if (state.resultTab === "scenes") {
-      body = renderScenes(result.scenes);
+      body = renderScenes(result);
     }
 
     var metaBlock = "";
@@ -642,8 +743,74 @@
     return lines;
   }
 
+  function drawFlashcardFrame(scene, t) {
+    var ctx = playerCtx;
+    var W = playerCanvas.width, H = playerCanvas.height;
+    var isKr = scene.kind === "kr-expr" || scene.kind === "kr-vocab";
+    var headlineFont = isKr ? "'Noto Serif KR', serif" : "'JetBrains Mono', monospace";
+    var subFont = isKr ? "'JetBrains Mono', monospace" : "'Noto Serif KR', serif";
+
+    ctx.fillStyle = "#EDEAE0"; // paper
+    ctx.fillRect(0, 0, W, H);
+
+    var te = easeInOutQuad(Math.min(1, t / 0.35));
+    var scale = 0.96 + 0.04 * te;
+
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(-W / 2, -H / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+
+    var tagText =
+      scene.kind === "expr" ? "EXPRESSION · 표현" :
+      scene.kind === "vocab" ? "VOCABULARY · 단어" :
+      scene.kind === "kr-expr" ? "한국어 표현 · KOREAN" :
+      "한국어 단어 · KOREAN";
+    ctx.font = "600 " + Math.round(W * 0.02) + "px 'JetBrains Mono', monospace";
+    ctx.fillStyle = "#3E6259";
+    ctx.fillText(tagText, W / 2, H * 0.34);
+
+    ctx.strokeStyle = "#C9C2AE";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.42, H * 0.39);
+    ctx.lineTo(W * 0.58, H * 0.39);
+    ctx.stroke();
+
+    var headlineSize = Math.round(W * (isKr ? 0.056 : 0.052));
+    ctx.font = (isKr ? "600 " : "700 ") + headlineSize + "px " + headlineFont;
+    ctx.fillStyle = "#26323A";
+    var headlineLines = wrapCanvasText(ctx, scene.headline || "", W * 0.8).slice(0, 2);
+    var lineHeight1 = headlineSize * 1.3;
+    var startY1 = H * 0.5;
+    headlineLines.forEach(function (line, i) {
+      ctx.fillText(line, W / 2, startY1 + i * lineHeight1);
+    });
+
+    if (scene.sub) {
+      var subSize = Math.round(W * (isKr ? 0.024 : 0.026));
+      ctx.font = "500 " + subSize + "px " + subFont;
+      ctx.fillStyle = "#6B7178";
+      var subLines = wrapCanvasText(ctx, scene.sub, W * 0.7).slice(0, 2);
+      var lineHeight2 = subSize * 1.6;
+      var startY2 = startY1 + (headlineLines.length - 1) * lineHeight1 + headlineSize * 1.5;
+      subLines.forEach(function (line, i) {
+        ctx.fillText(line, W / 2, startY2 + i * lineHeight2);
+      });
+    }
+
+    ctx.restore();
+    ctx.textAlign = "left";
+  }
+
   function drawPlayerFrame(scene, t, index) {
     if (!playerCtx || !playerCanvas) return;
+    if (scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab") {
+      drawFlashcardFrame(scene, t);
+      return;
+    }
     var ctx = playerCtx;
     var W = playerCanvas.width, H = playerCanvas.height;
 
@@ -721,8 +888,10 @@
     var scene = scenes[state.player.index];
     if (!scene) { playerRAF = null; return; }
 
-    var caption = getSceneCaption(scene, state.player.subtitleLang);
-    var duration = computeSceneDurationMs(caption, state.player.subtitleLang);
+    var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
+    var duration = isFlashcard
+      ? 3600
+      : computeSceneDurationMs(getSceneCaption(scene, state.player.subtitleLang), state.player.subtitleLang);
     var t = Math.min(1, playerElapsed / duration);
 
     drawPlayerFrame(scene, t, state.player.index);
@@ -740,12 +909,14 @@
       if (state.player.index < scenes.length - 1) {
         state.player.index++;
         updatePlayerDots();
+        if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
       } else if (state.player.exporting) {
         finishExportRecording();
         return;
       } else {
         state.player.index = 0;
         updatePlayerDots();
+        if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
       }
     }
 
@@ -775,8 +946,160 @@
     playerRAF = requestAnimationFrame(stepPlayer);
   }
 
-  function openPlayer(scenes) {
-    var usable = (scenes || []).filter(function (s) { return !!s.image; });
+  // ---------------------------------------------------------------------
+  // Generative ambient background music (Web Audio API only — no external
+  // audio files or APIs, so it's free and works offline). A soft pentatonic
+  // pad layer plus sparse plucked notes, scheduled a couple seconds ahead
+  // of playback. The same graph feeds both the speakers (live preview) and
+  // a MediaStreamAudioDestinationNode, which gets muxed into the exported
+  // video's audio track during MP4/WebM recording.
+  // ---------------------------------------------------------------------
+
+  var PENTATONIC = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25]; // C4 D4 E4 G4 A4 C5
+
+  function startPlayerAudio() {
+    if (audioCtx) return;
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    try {
+      audioCtx = new Ctx();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+
+      audioMasterGain = audioCtx.createGain();
+      audioMasterGain.gain.value = audioMuted ? 0 : 0.5;
+
+      var filter = audioCtx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 1800;
+
+      audioDestNode = audioCtx.createMediaStreamDestination();
+      audioMasterGain.connect(filter);
+      filter.connect(audioCtx.destination);
+      filter.connect(audioDestNode);
+
+      audioNextPadTime = audioCtx.currentTime + 0.2;
+      audioNextPluckTime = audioCtx.currentTime + 2;
+      transitionNoteIndex = 0;
+      audioScheduler = setInterval(scheduleAmbientAudio, 400);
+      scheduleAmbientAudio();
+    } catch (e) {
+      stopPlayerAudio();
+    }
+  }
+
+  function scheduleAmbientAudio() {
+    if (!audioCtx) return;
+    var now = audioCtx.currentTime;
+    var lookahead = 2.0;
+    while (audioNextPadTime < now + lookahead) {
+      playAmbientPad(audioNextPadTime);
+      audioNextPadTime += 9 + Math.random() * 4;
+    }
+    while (audioNextPluckTime < now + lookahead) {
+      playAmbientPluck(audioNextPluckTime);
+      audioNextPluckTime += 3 + Math.random() * 4;
+    }
+  }
+
+  function playAmbientPad(startTime) {
+    var root = PENTATONIC[Math.floor(Math.random() * 3)] / 2; // low, warm root
+    var dur = 11;
+    [root, root * 1.5, root * 2].forEach(function (freq, i) {
+      var osc = audioCtx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      var g = audioCtx.createGain();
+      var peak = 0.06 - i * 0.015;
+      g.gain.setValueAtTime(0, startTime);
+      g.gain.linearRampToValueAtTime(peak, startTime + dur * 0.35);
+      g.gain.linearRampToValueAtTime(0, startTime + dur);
+      osc.connect(g);
+      g.connect(audioMasterGain);
+      osc.start(startTime);
+      osc.stop(startTime + dur + 0.1);
+    });
+  }
+
+  function playAmbientPluck(startTime) {
+    var freq = PENTATONIC[Math.floor(Math.random() * PENTATONIC.length)];
+    var osc = audioCtx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.value = freq;
+    var g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, startTime);
+    g.gain.linearRampToValueAtTime(0.09, startTime + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 2.5);
+    osc.connect(g);
+    g.connect(audioMasterGain);
+    osc.start(startTime);
+    osc.stop(startTime + 2.6);
+  }
+
+  // A brighter, more prominent chime played right on scene transitions (as opposed to
+  // the quiet, randomly-timed ambient plucks above). Notes step through the pentatonic
+  // scale one octave up, so the sequence of transitions across a slideshow feels like a
+  // simple ascending/wrapping melody rather than random noise.
+  function playSceneTransitionAccent(startTime) {
+    if (!audioCtx || !audioMasterGain) return;
+    var freq = PENTATONIC[transitionNoteIndex % PENTATONIC.length] * 2;
+    transitionNoteIndex++;
+
+    var osc = audioCtx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    var g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, startTime);
+    g.gain.linearRampToValueAtTime(0.16, startTime + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 1.1);
+    osc.connect(g);
+    g.connect(audioMasterGain);
+    osc.start(startTime);
+    osc.stop(startTime + 1.2);
+
+    var shimmer = audioCtx.createOscillator();
+    shimmer.type = "triangle";
+    shimmer.frequency.value = freq * 1.5;
+    var gs = audioCtx.createGain();
+    gs.gain.setValueAtTime(0, startTime);
+    gs.gain.linearRampToValueAtTime(0.06, startTime + 0.008);
+    gs.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.7);
+    shimmer.connect(gs);
+    gs.connect(audioMasterGain);
+    shimmer.start(startTime);
+    shimmer.stop(startTime + 0.8);
+
+    // A single soft echo tap for a bit of chime tail (poor man's delay).
+    var echo = audioCtx.createOscillator();
+    echo.type = "sine";
+    echo.frequency.value = freq;
+    var ge = audioCtx.createGain();
+    ge.gain.setValueAtTime(0, startTime + 0.16);
+    ge.gain.linearRampToValueAtTime(0.05, startTime + 0.17);
+    ge.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.9);
+    echo.connect(ge);
+    ge.connect(audioMasterGain);
+    echo.start(startTime + 0.16);
+    echo.stop(startTime + 1.0);
+  }
+
+  function stopPlayerAudio() {
+    if (audioScheduler) { clearInterval(audioScheduler); audioScheduler = null; }
+    if (audioCtx) { try { audioCtx.close(); } catch (e) {} }
+    audioCtx = null;
+    audioMasterGain = null;
+    audioDestNode = null;
+  }
+
+  function togglePlayerAudioMute() {
+    audioMuted = !audioMuted;
+    if (audioMasterGain && audioCtx) {
+      audioMasterGain.gain.linearRampToValueAtTime(audioMuted ? 0 : 0.5, audioCtx.currentTime + 0.2);
+    }
+    return audioMuted;
+  }
+
+  function openPlayer(result) {
+    var usable = buildPlayableScenes(result || {});
     if (usable.length === 0) return;
     state.player = {
       active: true,
@@ -789,8 +1112,10 @@
       exportError: "",
       videoUrl: "",
       videoExt: "webm",
+      muted: audioMuted,
     };
     render();
+    startPlayerAudio();
     var fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
     fontsReady.then(function () { return preloadPlayerImages(usable); }).then(function () {
       if (!state.player.active) return; // closed before images finished loading
@@ -805,16 +1130,19 @@
       mediaRecorder = null;
     }
     if (playerRAF) { cancelAnimationFrame(playerRAF); playerRAF = null; }
+    stopPlayerAudio();
     if (state.player.videoUrl) URL.revokeObjectURL(state.player.videoUrl);
-    state.player = { active: false, scenes: [], subtitleLang: "ko", index: 0, playing: false, exporting: false, exportDone: false, exportError: "", videoUrl: "", videoExt: "webm" };
+    state.player = { active: false, scenes: [], subtitleLang: "ko", index: 0, playing: false, exporting: false, exportDone: false, exportError: "", videoUrl: "", videoExt: "webm", muted: audioMuted };
     playerCanvas = null; playerCtx = null; playerImages = [];
     render();
   }
 
   function pickRecorderMimeType() {
     var candidates = [
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
       "video/mp4;codecs=avc1.42E01E",
       "video/mp4",
+      "video/webm;codecs=vp9,opus",
       "video/webm;codecs=vp9",
       "video/webm;codecs=vp8",
       "video/webm",
@@ -844,10 +1172,16 @@
       playerCanvas = document.getElementById("kb-canvas");
       if (!playerCanvas) return;
       playerCtx = playerCanvas.getContext("2d");
-      var stream = playerCanvas.captureStream(30);
+      var videoStream = playerCanvas.captureStream(30);
+      var combinedStream = videoStream;
+      if (audioDestNode && audioDestNode.stream.getAudioTracks().length > 0) {
+        combinedStream = new MediaStream(
+          videoStream.getVideoTracks().concat(audioDestNode.stream.getAudioTracks())
+        );
+      }
       recordedChunks = [];
       try {
-        mediaRecorder = new MediaRecorder(stream, { mimeType: mimeType, videoBitsPerSecond: 4000000 });
+        mediaRecorder = new MediaRecorder(combinedStream, { mimeType: mimeType, videoBitsPerSecond: 4000000 });
       } catch (e) {
         state.player.exporting = false;
         state.player.exportError = "녹화를 시작하지 못했어요: " + ((e && e.message) || "");
@@ -889,6 +1223,7 @@
     state.player.exporting = false;
     state.player.index = 0;
     state.player.playing = true;
+    transitionNoteIndex = 0;
     render();
     requestAnimationFrame(startPlayerLoop);
   }
@@ -899,6 +1234,7 @@
     if (state.player.videoUrl) { URL.revokeObjectURL(state.player.videoUrl); state.player.videoUrl = ""; }
     state.player.index = 0;
     state.player.playing = true;
+    transitionNoteIndex = 0;
     render();
     requestAnimationFrame(startPlayerLoop);
   }
@@ -947,6 +1283,7 @@
             '<button class="icon-btn" data-action="player-prev" aria-label="이전 장면">⏮</button>' +
             '<button class="icon-btn" id="kb-playpause" data-action="player-toggle-play" aria-label="재생/일시정지">' + (p.playing ? "⏸" : "▶") + "</button>" +
             '<button class="icon-btn" data-action="player-next" aria-label="다음 장면">⏭</button>' +
+            '<button class="icon-btn" id="kb-mute" data-action="player-toggle-mute" aria-label="배경음 켜기/끄기">' + (p.muted ? "🔇" : "🔊") + "</button>" +
           "</div>" +
           '<div class="kb-dots" id="kb-dots">' + dots + "</div>" +
           '<div class="kb-lang-row">' + langChips + "</div>" +
@@ -1045,21 +1382,27 @@
       state.view = "home";
       render();
     } else if (action === "open-player") {
-      openPlayer(activeResultForPlayer ? activeResultForPlayer.scenes : []);
+      openPlayer(activeResultForPlayer);
     } else if (action === "close-player") {
       closePlayer();
     } else if (action === "player-toggle-play") {
       state.player.playing = !state.player.playing;
       var playBtn = document.getElementById("kb-playpause");
       if (playBtn) playBtn.textContent = state.player.playing ? "⏸" : "▶";
+    } else if (action === "player-toggle-mute") {
+      state.player.muted = togglePlayerAudioMute();
+      var muteBtn = document.getElementById("kb-mute");
+      if (muteBtn) muteBtn.textContent = state.player.muted ? "🔇" : "🔊";
     } else if (action === "player-prev") {
       state.player.index = (state.player.index - 1 + state.player.scenes.length) % state.player.scenes.length;
       playerElapsed = 0; playerLastTs = null;
       updatePlayerDots();
+      if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
     } else if (action === "player-next") {
       state.player.index = (state.player.index + 1) % state.player.scenes.length;
       playerElapsed = 0; playerLastTs = null;
       updatePlayerDots();
+      if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
     } else if (action === "player-set-lang") {
       state.player.subtitleLang = target.getAttribute("data-lang");
       document.querySelectorAll('[data-action="player-set-lang"]').forEach(function (el) {

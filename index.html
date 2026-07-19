@@ -346,8 +346,7 @@
   var audioScheduler = null, audioNextPadTime = 0, audioNextPluckTime = 0;
   var audioMuted = false;
   var transitionNoteIndex = 0;
-  var narrationGain = null, narrationSource = null;
-  var introAudioBuffer = null, introAudioDurationMs = 0;
+  var arpeggioStep = 0;
 
   function render() {
     var html = '<div class="wrap">';
@@ -511,12 +510,6 @@
   // successfully generated image, plus "flashcard" slides for expressions/vocabulary
   // (no AI image needed — these are drawn as typographic cards, so they cost nothing
   // extra to generate and are always available even if scene image generation failed).
-  function buildIntroScene(result) {
-    var script = result.koreanSpeakScript;
-    if (!script || !String(script).trim()) return [];
-    return [{ kind: "intro", text: script }];
-  }
-
   function buildPhotoScenes(result) {
     var list = [];
     (result.scenes || []).forEach(function (s) {
@@ -525,6 +518,15 @@
       }
     });
     return list;
+  }
+
+  // A quick-cut "trailer" montage through the same photo scenes, played once at the very
+  // start of the slideshow before the full-paced version with captions. No text card, no
+  // narration — just fast flashes through the diary's own images.
+  function buildFlashMontage(result) {
+    return buildPhotoScenes(result).map(function (p) {
+      return { kind: "flash", image: p.image };
+    });
   }
 
   // lang === "ko" -> only Korean expr/vocab flashcards. lang === "easy"/"natural" -> only
@@ -558,31 +560,23 @@
     return list;
   }
 
-  // The intro (Korean speak script) always comes first, regardless of subtitle language —
-  // it's the opening of the video, not tied to the easy/natural/Korean study-language toggle.
+  // The flash montage always comes first, regardless of subtitle language — it's a quick
+  // preview of the diary's images, not tied to the easy/natural/Korean study-language toggle.
   function buildPlayableScenes(result, lang) {
-    return buildIntroScene(result).concat(buildPhotoScenes(result)).concat(buildFlashcards(result, lang));
+    return buildFlashMontage(result).concat(buildPhotoScenes(result)).concat(buildFlashcards(result, lang));
   }
 
   function renderScenes(result) {
     var scenes = result.scenes || [];
     var expressions = result.expressions || [];
     var vocabulary = result.vocabulary || [];
-    var hasIntro = !!(result.koreanSpeakScript && String(result.koreanSpeakScript).trim());
-    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0 && !hasIntro) {
+    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0) {
       return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면이 없어요.</p>';
     }
 
     var playable = buildPlayableScenes(result, null);
     var playBtn = playable.length > 0
       ? '<button class="btn" style="margin-bottom:14px;" data-action="open-player">▶ 슬라이드쇼로 보기</button>'
-      : "";
-
-    var introCard = hasIntro
-      ? '<div class="scene-card flash-card">' +
-          '<p class="flash-tag en">오프닝 · INTRO</p>' +
-          '<p class="flash-sub kr" style="font-size:14px; line-height:1.8;">' + escapeHtml(result.koreanSpeakScript) + "</p>" +
-        "</div>"
       : "";
 
     var sceneCards = scenes.map(function (s) {
@@ -601,7 +595,7 @@
       );
     }).join("");
 
-    var flashCards = playable.filter(function (s) { return s.kind !== "photo" && s.kind !== "intro"; }).map(function (s) {
+    var flashCards = playable.filter(function (s) { return s.kind !== "photo" && s.kind !== "flash"; }).map(function (s) {
       var isKr = s.kind === "kr-expr" || s.kind === "kr-vocab";
       var tagLabel =
         s.kind === "expr" ? "EXPRESSION · 표현" :
@@ -619,7 +613,7 @@
       );
     }).join("");
 
-    return playBtn + '<div class="scene-list">' + introCard + sceneCards + flashCards + "</div>";
+    return playBtn + '<div class="scene-list">' + sceneCards + flashCards + "</div>";
   }
 
   function renderResultBlock(opts) {
@@ -845,53 +839,34 @@
     ctx.textAlign = "left";
   }
 
-  function drawIntroFrame(scene, t) {
+  function drawFlashFrame(scene, t, index) {
     var ctx = playerCtx;
     var W = playerCanvas.width, H = playerCanvas.height;
 
-    ctx.fillStyle = "#EDEAE0"; // paper
+    ctx.fillStyle = "#1A2420";
     ctx.fillRect(0, 0, W, H);
 
-    var te = easeInOutQuad(Math.min(1, t / 0.35));
-    var scale = 0.97 + 0.03 * te;
+    var img = playerImages[index];
+    if (img && img.complete && img.naturalWidth) {
+      var snap = 1.1 - 0.1 * Math.min(1, t * 3); // quick snap-in, settles almost immediately
+      var baseScale = Math.max(W / img.naturalWidth, H / img.naturalHeight) * snap;
+      var dw = img.naturalWidth * baseScale, dh = img.naturalHeight * baseScale;
+      var dx = (W - dw) / 2, dy = (H - dh) / 2;
+      ctx.drawImage(img, dx, dy, dw, dh);
+    }
 
-    ctx.save();
-    ctx.translate(W / 2, H / 2);
-    ctx.scale(scale, scale);
-    ctx.translate(-W / 2, -H / 2);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-
-    ctx.font = "600 " + Math.round(W * 0.02) + "px 'JetBrains Mono', monospace";
-    ctx.fillStyle = "#3E6259";
-    ctx.fillText("오프닝 · INTRO", W / 2, H * 0.24);
-
-    ctx.strokeStyle = "#C9C2AE";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(W * 0.42, H * 0.28);
-    ctx.lineTo(W * 0.58, H * 0.28);
-    ctx.stroke();
-
-    var bodySize = Math.round(W * 0.026);
-    ctx.font = "500 " + bodySize + "px 'Noto Serif KR', serif";
-    ctx.fillStyle = "#26323A";
-    var lines = wrapCanvasText(ctx, scene.text || "", W * 0.78).slice(0, 7);
-    var lineHeight = bodySize * 1.7;
-    var totalHeight = (lines.length - 1) * lineHeight;
-    var startY = H / 2 - totalHeight / 2 + bodySize * 0.3;
-    lines.forEach(function (line, i) {
-      ctx.fillText(line, W / 2, startY + i * lineHeight);
-    });
-
-    ctx.restore();
-    ctx.textAlign = "left";
+    // Quick white flash on entry for a punchy, trailer-like cut.
+    var flashAlpha = Math.max(0, 0.4 - t * 2.2);
+    if (flashAlpha > 0) {
+      ctx.fillStyle = "rgba(255,255,255," + flashAlpha + ")";
+      ctx.fillRect(0, 0, W, H);
+    }
   }
 
   function drawPlayerFrame(scene, t, index) {
     if (!playerCtx || !playerCanvas) return;
-    if (scene.kind === "intro") {
-      drawIntroFrame(scene, t);
+    if (scene.kind === "flash") {
+      drawFlashFrame(scene, t, index);
       return;
     }
     if (scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab") {
@@ -993,10 +968,8 @@
 
     var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
     var duration;
-    if (scene.kind === "intro") {
-      duration = introAudioDurationMs > 0
-        ? introAudioDurationMs + 500
-        : Math.max(5000, Math.min(20000, 1200 + (scene.text || "").length * 100));
+    if (scene.kind === "flash") {
+      duration = 380;
     } else if (isFlashcard) {
       duration = 3600;
     } else {
@@ -1015,11 +988,17 @@
     }
 
     if (t >= 1 && advancing) {
+      var oldKind = scene.kind;
       playerElapsed = 0;
       if (state.player.index < scenes.length - 1) {
         state.player.index++;
         updatePlayerDots();
-        if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
+        var newKind = scenes[state.player.index].kind;
+        // Skip the chime during rapid flash-montage cuts (too fast to sound good), but still
+        // ring it the moment the montage ends and the full-paced story begins.
+        if (audioCtx && !(oldKind === "flash" && newKind === "flash")) {
+          playSceneTransitionAccent(audioCtx.currentTime + 0.02);
+        }
       } else if (state.player.exporting) {
         finishExportRecording();
         return;
@@ -1028,7 +1007,6 @@
         updatePlayerDots();
         if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
       }
-      if (scenes[state.player.index] && scenes[state.player.index].kind === "intro") playIntroNarration();
     }
 
     playerRAF = requestAnimationFrame(stepPlayer);
@@ -1088,23 +1066,19 @@
       filter.connect(audioCtx.destination);
       filter.connect(audioDestNode);
 
-      // Narration bypasses the ambient lowpass filter (kept open for speech clarity)
-      // but still connects to both the speakers and the export capture destination,
-      // and still respects the mute toggle.
-      narrationGain = audioCtx.createGain();
-      narrationGain.gain.value = audioMuted ? 0 : 0.9;
-      narrationGain.connect(audioCtx.destination);
-      narrationGain.connect(audioDestNode);
-
       audioNextPadTime = audioCtx.currentTime + 0.2;
-      audioNextPluckTime = audioCtx.currentTime + 2;
+      audioNextPluckTime = audioCtx.currentTime + 0.5;
       transitionNoteIndex = 0;
-      audioScheduler = setInterval(scheduleAmbientAudio, 400);
+      arpeggioStep = 0;
+      audioScheduler = setInterval(scheduleAmbientAudio, 300);
       scheduleAmbientAudio();
     } catch (e) {
       stopPlayerAudio();
     }
   }
+
+  var EXTENDED_SCALE = PENTATONIC.concat(PENTATONIC.map(function (f) { return f * 2; }));
+  var ARPEGGIO_PATTERN = [0, 2, 4, 6, 8, 6, 4, 2]; // walks up two octaves then back down — bouncy, cheerful
 
   function scheduleAmbientAudio() {
     if (!audioCtx) return;
@@ -1112,11 +1086,11 @@
     var lookahead = 2.0;
     while (audioNextPadTime < now + lookahead) {
       playAmbientPad(audioNextPadTime);
-      audioNextPadTime += 7 + Math.random() * 3;
+      audioNextPadTime += 6 + Math.random() * 2;
     }
     while (audioNextPluckTime < now + lookahead) {
       playAmbientPluck(audioNextPluckTime);
-      audioNextPluckTime += 2 + Math.random() * 2.5;
+      audioNextPluckTime += 0.42; // steady, bouncy pulse instead of sparse random timing
     }
   }
 
@@ -1140,23 +1114,24 @@
   }
 
   function playAmbientPluck(startTime) {
-    var octaveUp = Math.random() < 0.4 ? 2 : 1;
-    var freq = PENTATONIC[Math.floor(Math.random() * PENTATONIC.length)] * octaveUp;
+    var idx = ARPEGGIO_PATTERN[arpeggioStep % ARPEGGIO_PATTERN.length];
+    arpeggioStep++;
+    var freq = EXTENDED_SCALE[idx % EXTENDED_SCALE.length];
     var osc = audioCtx.createOscillator();
     osc.type = "triangle";
     osc.frequency.value = freq;
     var g = audioCtx.createGain();
     g.gain.setValueAtTime(0, startTime);
-    g.gain.linearRampToValueAtTime(0.12, startTime + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 2.0);
+    g.gain.linearRampToValueAtTime(0.13, startTime + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.38);
     osc.connect(g);
     g.connect(audioMasterGain);
     osc.start(startTime);
-    osc.stop(startTime + 2.1);
+    osc.stop(startTime + 0.42);
   }
 
   // A brighter, more prominent chime played right on scene transitions (as opposed to
-  // the quiet, randomly-timed ambient plucks above). Notes step through the pentatonic
+  // the quiet, rhythmic ambient plucks above). Notes step through the pentatonic
   // scale one octave up, so the sequence of transitions across a slideshow feels like a
   // simple ascending/wrapping melody rather than random noise.
   function playSceneTransitionAccent(startTime) {
@@ -1204,14 +1179,10 @@
 
   function stopPlayerAudio() {
     if (audioScheduler) { clearInterval(audioScheduler); audioScheduler = null; }
-    if (narrationSource) { try { narrationSource.stop(); } catch (e) {} narrationSource = null; }
     if (audioCtx) { try { audioCtx.close(); } catch (e) {} }
     audioCtx = null;
     audioMasterGain = null;
     audioDestNode = null;
-    narrationGain = null;
-    introAudioBuffer = null;
-    introAudioDurationMs = 0;
   }
 
   function togglePlayerAudioMute() {
@@ -1219,43 +1190,7 @@
     if (audioMasterGain && audioCtx) {
       audioMasterGain.gain.linearRampToValueAtTime(audioMuted ? 0 : 0.5, audioCtx.currentTime + 0.2);
     }
-    if (narrationGain && audioCtx) {
-      narrationGain.gain.linearRampToValueAtTime(audioMuted ? 0 : 0.9, audioCtx.currentTime + 0.2);
-    }
     return audioMuted;
-  }
-
-  // Decodes the base64 MP3 narration (from the server) into an AudioBuffer so it can be
-  // played through the same graph that feeds the export recording. Resolves even on
-  // failure (missing/undecodable audio just means no narration — the slideshow still works).
-  function loadIntroAudio(result) {
-    introAudioBuffer = null;
-    introAudioDurationMs = 0;
-    var url = result && result.introAudio;
-    if (!url || !audioCtx) return Promise.resolve();
-    try {
-      var base64 = url.split(",")[1] || "";
-      var binary = atob(base64);
-      var bytes = new Uint8Array(binary.length);
-      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      return audioCtx.decodeAudioData(bytes.buffer).then(function (buffer) {
-        introAudioBuffer = buffer;
-        introAudioDurationMs = buffer.duration * 1000;
-      }).catch(function () {
-        introAudioBuffer = null;
-      });
-    } catch (e) {
-      return Promise.resolve();
-    }
-  }
-
-  function playIntroNarration() {
-    if (!audioCtx || !introAudioBuffer || !narrationGain) return;
-    if (narrationSource) { try { narrationSource.stop(); } catch (e) {} }
-    narrationSource = audioCtx.createBufferSource();
-    narrationSource.buffer = introAudioBuffer;
-    narrationSource.connect(narrationGain);
-    narrationSource.start(audioCtx.currentTime);
   }
 
   function openPlayer(result) {
@@ -1279,13 +1214,9 @@
     render();
     startPlayerAudio();
     var fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
-    Promise.all([
-      fontsReady.then(function () { return preloadPlayerImages(usable); }),
-      loadIntroAudio(result || {}),
-    ]).then(function () {
-      if (!state.player.active) return; // closed before loading finished
+    fontsReady.then(function () { return preloadPlayerImages(usable); }).then(function () {
+      if (!state.player.active) return; // closed before images finished loading
       startPlayerLoop();
-      if (usable[0] && usable[0].kind === "intro") playIntroNarration();
     });
   }
 
@@ -1371,7 +1302,6 @@
       playerLastTs = null;
       if (playerRAF) cancelAnimationFrame(playerRAF);
       playerRAF = requestAnimationFrame(stepPlayer);
-      if (state.player.scenes[0] && state.player.scenes[0].kind === "intro") playIntroNarration();
     });
   }
 
@@ -1393,9 +1323,9 @@
     state.player.index = 0;
     state.player.playing = true;
     transitionNoteIndex = 0;
+    arpeggioStep = 0;
     render();
     requestAnimationFrame(startPlayerLoop);
-    if (state.player.scenes[0] && state.player.scenes[0].kind === "intro") playIntroNarration();
   }
 
   function replayPlayer() {
@@ -1406,9 +1336,9 @@
     state.player.index = 0;
     state.player.playing = true;
     transitionNoteIndex = 0;
+    arpeggioStep = 0;
     render();
     requestAnimationFrame(startPlayerLoop);
-    if (state.player.scenes[0] && state.player.scenes[0].kind === "intro") playIntroNarration();
   }
 
   function shareExportedVideo() {
@@ -1597,13 +1527,11 @@
       playerElapsed = 0; playerLastTs = null;
       updatePlayerDots();
       if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
-      if (state.player.scenes[state.player.index] && state.player.scenes[state.player.index].kind === "intro") playIntroNarration();
     } else if (action === "player-next") {
       state.player.index = (state.player.index + 1) % state.player.scenes.length;
       playerElapsed = 0; playerLastTs = null;
       updatePlayerDots();
       if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
-      if (state.player.scenes[state.player.index] && state.player.scenes[state.player.index].kind === "intro") playIntroNarration();
     } else if (action === "player-set-lang") {
       var newLang = target.getAttribute("data-lang");
       state.player.subtitleLang = newLang;

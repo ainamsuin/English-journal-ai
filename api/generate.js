@@ -6,7 +6,8 @@
 // (easyEnglish, naturalEnglish, vocabulary, scenes, etc).
 //
 // Scene images are generated separately via Cloudflare Workers AI (SDXL-Lightning,
-// which supports explicit width/height — scenes are generated at 1280x720),
+// which supports explicit width/height — scenes are generated at 1280x720), and the
+// Korean intro narration audio is generated via Cloudflare Workers AI's MeloTTS model.
 // which has its own, independent free daily quota. Set these two environment
 // variables to enable it:
 //   CLOUDFLARE_ACCOUNT_ID  — your Cloudflare account ID
@@ -66,6 +67,7 @@ const IMAGE_STYLE_SUFFIX = [
 
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
 const DEFAULT_CF_IMAGE_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning";
+const DEFAULT_CF_TTS_MODEL = "@cf/myshell-ai/melotts";
 const SCENE_IMAGE_WIDTH = 1280;
 const SCENE_IMAGE_HEIGHT = 720;
 const CF_PROMPT_MAX_LEN = 2048; // conservative cap shared across Cloudflare image models
@@ -222,6 +224,41 @@ async function generateSceneImage(accountId, apiToken, cfModel, imagePrompt, dea
   return { image: null, error: lastError };
 }
 
+// Generates the intro narration audio (reading the Korean speak script aloud) via
+// Cloudflare Workers AI's MeloTTS model, which supports Korean. Returns a base64 MP3
+// as a data URL so the client can both play it and decode it into an AudioBuffer for
+// mixing into the exported video's audio track.
+async function generateNarrationAudio(accountId, apiToken, text) {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${DEFAULT_CF_TTS_MODEL}`;
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiToken}` },
+      body: JSON.stringify({ prompt: text.slice(0, 2000), lang: "ko" }),
+    });
+
+    if (!r.ok) {
+      const errText = await r.text();
+      return { audio: null, error: `Cloudflare TTS error: ${extractCloudflareErrorMessage(errText).slice(0, 300)}` };
+    }
+
+    const contentType = (r.headers.get("content-type") || "").toLowerCase();
+    if (contentType.startsWith("audio/")) {
+      const buf = Buffer.from(await r.arrayBuffer());
+      return { audio: `data:${contentType.split(";")[0]};base64,${buf.toString("base64")}`, error: null };
+    }
+
+    const data = await r.json();
+    if (!data || data.success === false || !data.result || !data.result.audio) {
+      const msg = (data && Array.isArray(data.errors) && data.errors[0] && data.errors[0].message) || "오디오 응답이 비어있습니다.";
+      return { audio: null, error: msg };
+    }
+    return { audio: `data:audio/mpeg;base64,${data.result.audio}`, error: null };
+  } catch (e) {
+    return { audio: null, error: (e && e.message) || "내레이션 생성 실패" };
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
@@ -346,27 +383,42 @@ export default async function handler(req, res) {
       error: null,
     }));
 
+    let imagesPromise;
     if (shouldGenerateImages) {
       if (!cfConfigured) {
-        scenes = scenes.map((scene) => ({
-          ...scene,
-          error: "서버에 CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN이 설정되어 있지 않아 이미지를 생성할 수 없어요.",
-        }));
+        const noCfError = "서버에 CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN이 설정되어 있지 않아 이미지를 생성할 수 없어요.";
+        imagesPromise = Promise.resolve(scenes.map((scene) => ({ ...scene, error: noCfError })));
       } else {
         const imageDeadline = Date.now() + IMAGE_GENERATION_BUDGET_MS;
-        const results = await runWithConcurrency(scenes, IMAGE_CONCURRENCY, (scene) =>
+        imagesPromise = runWithConcurrency(scenes, IMAGE_CONCURRENCY, (scene) =>
           scene.imagePrompt
             ? generateSceneImage(cfAccountId, cfApiToken, cfModelName, scene.imagePrompt, imageDeadline)
             : Promise.resolve({ image: null, error: "no imagePrompt" })
-        );
-        scenes = scenes.map((scene, i) => ({ ...scene, image: results[i].image, error: results[i].error }));
+        ).then((results) => scenes.map((scene, i) => ({ ...scene, image: results[i].image, error: results[i].error })));
       }
+    } else {
+      imagesPromise = Promise.resolve(scenes);
     }
 
-    parsed.scenes = scenes;
+    const koreanScript = typeof parsed.koreanSpeakScript === "string" ? parsed.koreanSpeakScript.trim() : "";
+    const shouldGenerateNarration = generateImages !== false && koreanScript.length > 0;
+    let narrationPromise;
+    if (shouldGenerateNarration) {
+      narrationPromise = cfConfigured
+        ? generateNarrationAudio(cfAccountId, cfApiToken, koreanScript)
+        : Promise.resolve({ audio: null, error: "서버에 CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN이 설정되어 있지 않아 내레이션을 생성할 수 없어요." });
+    } else {
+      narrationPromise = Promise.resolve({ audio: null, error: null });
+    }
 
-    // We forward the parsed object back to the client (with images attached).
-    // Neither the Gemini API key nor the Cloudflare API token ever leave this server.
+    const [finalScenes, narrationResult] = await Promise.all([imagesPromise, narrationPromise]);
+
+    parsed.scenes = finalScenes;
+    parsed.introAudio = narrationResult.audio;
+    if (narrationResult.error) parsed.introAudioError = narrationResult.error;
+
+    // We forward the parsed object back to the client (with images and narration audio
+    // attached). Neither the Gemini API key nor the Cloudflare API token ever leave this server.
     res.status(200).json({ text: JSON.stringify(parsed) });
   } catch (e) {
     res.status(500).json({ error: (e && e.message) || "Unknown server error" });

@@ -346,6 +346,8 @@
   var audioScheduler = null, audioNextPadTime = 0, audioNextPluckTime = 0;
   var audioMuted = false;
   var transitionNoteIndex = 0;
+  var narrationGain = null, narrationSource = null;
+  var introAudioBuffer = null, introAudioDurationMs = 0;
 
   function render() {
     var html = '<div class="wrap">';
@@ -992,7 +994,9 @@
     var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
     var duration;
     if (scene.kind === "intro") {
-      duration = Math.max(5000, Math.min(20000, 1200 + (scene.text || "").length * 100));
+      duration = introAudioDurationMs > 0
+        ? introAudioDurationMs + 500
+        : Math.max(5000, Math.min(20000, 1200 + (scene.text || "").length * 100));
     } else if (isFlashcard) {
       duration = 3600;
     } else {
@@ -1024,6 +1028,7 @@
         updatePlayerDots();
         if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
       }
+      if (scenes[state.player.index] && scenes[state.player.index].kind === "intro") playIntroNarration();
     }
 
     playerRAF = requestAnimationFrame(stepPlayer);
@@ -1082,6 +1087,14 @@
       audioMasterGain.connect(filter);
       filter.connect(audioCtx.destination);
       filter.connect(audioDestNode);
+
+      // Narration bypasses the ambient lowpass filter (kept open for speech clarity)
+      // but still connects to both the speakers and the export capture destination,
+      // and still respects the mute toggle.
+      narrationGain = audioCtx.createGain();
+      narrationGain.gain.value = audioMuted ? 0 : 0.9;
+      narrationGain.connect(audioCtx.destination);
+      narrationGain.connect(audioDestNode);
 
       audioNextPadTime = audioCtx.currentTime + 0.2;
       audioNextPluckTime = audioCtx.currentTime + 2;
@@ -1191,10 +1204,14 @@
 
   function stopPlayerAudio() {
     if (audioScheduler) { clearInterval(audioScheduler); audioScheduler = null; }
+    if (narrationSource) { try { narrationSource.stop(); } catch (e) {} narrationSource = null; }
     if (audioCtx) { try { audioCtx.close(); } catch (e) {} }
     audioCtx = null;
     audioMasterGain = null;
     audioDestNode = null;
+    narrationGain = null;
+    introAudioBuffer = null;
+    introAudioDurationMs = 0;
   }
 
   function togglePlayerAudioMute() {
@@ -1202,7 +1219,43 @@
     if (audioMasterGain && audioCtx) {
       audioMasterGain.gain.linearRampToValueAtTime(audioMuted ? 0 : 0.5, audioCtx.currentTime + 0.2);
     }
+    if (narrationGain && audioCtx) {
+      narrationGain.gain.linearRampToValueAtTime(audioMuted ? 0 : 0.9, audioCtx.currentTime + 0.2);
+    }
     return audioMuted;
+  }
+
+  // Decodes the base64 MP3 narration (from the server) into an AudioBuffer so it can be
+  // played through the same graph that feeds the export recording. Resolves even on
+  // failure (missing/undecodable audio just means no narration — the slideshow still works).
+  function loadIntroAudio(result) {
+    introAudioBuffer = null;
+    introAudioDurationMs = 0;
+    var url = result && result.introAudio;
+    if (!url || !audioCtx) return Promise.resolve();
+    try {
+      var base64 = url.split(",")[1] || "";
+      var binary = atob(base64);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return audioCtx.decodeAudioData(bytes.buffer).then(function (buffer) {
+        introAudioBuffer = buffer;
+        introAudioDurationMs = buffer.duration * 1000;
+      }).catch(function () {
+        introAudioBuffer = null;
+      });
+    } catch (e) {
+      return Promise.resolve();
+    }
+  }
+
+  function playIntroNarration() {
+    if (!audioCtx || !introAudioBuffer || !narrationGain) return;
+    if (narrationSource) { try { narrationSource.stop(); } catch (e) {} }
+    narrationSource = audioCtx.createBufferSource();
+    narrationSource.buffer = introAudioBuffer;
+    narrationSource.connect(narrationGain);
+    narrationSource.start(audioCtx.currentTime);
   }
 
   function openPlayer(result) {
@@ -1226,9 +1279,13 @@
     render();
     startPlayerAudio();
     var fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
-    fontsReady.then(function () { return preloadPlayerImages(usable); }).then(function () {
-      if (!state.player.active) return; // closed before images finished loading
+    Promise.all([
+      fontsReady.then(function () { return preloadPlayerImages(usable); }),
+      loadIntroAudio(result || {}),
+    ]).then(function () {
+      if (!state.player.active) return; // closed before loading finished
       startPlayerLoop();
+      if (usable[0] && usable[0].kind === "intro") playIntroNarration();
     });
   }
 
@@ -1314,6 +1371,7 @@
       playerLastTs = null;
       if (playerRAF) cancelAnimationFrame(playerRAF);
       playerRAF = requestAnimationFrame(stepPlayer);
+      if (state.player.scenes[0] && state.player.scenes[0].kind === "intro") playIntroNarration();
     });
   }
 
@@ -1337,6 +1395,7 @@
     transitionNoteIndex = 0;
     render();
     requestAnimationFrame(startPlayerLoop);
+    if (state.player.scenes[0] && state.player.scenes[0].kind === "intro") playIntroNarration();
   }
 
   function replayPlayer() {
@@ -1349,6 +1408,7 @@
     transitionNoteIndex = 0;
     render();
     requestAnimationFrame(startPlayerLoop);
+    if (state.player.scenes[0] && state.player.scenes[0].kind === "intro") playIntroNarration();
   }
 
   function shareExportedVideo() {
@@ -1537,11 +1597,13 @@
       playerElapsed = 0; playerLastTs = null;
       updatePlayerDots();
       if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
+      if (state.player.scenes[state.player.index] && state.player.scenes[state.player.index].kind === "intro") playIntroNarration();
     } else if (action === "player-next") {
       state.player.index = (state.player.index + 1) % state.player.scenes.length;
       playerElapsed = 0; playerLastTs = null;
       updatePlayerDots();
       if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
+      if (state.player.scenes[state.player.index] && state.player.scenes[state.player.index].kind === "intro") playIntroNarration();
     } else if (action === "player-set-lang") {
       var newLang = target.getAttribute("data-lang");
       state.player.subtitleLang = newLang;

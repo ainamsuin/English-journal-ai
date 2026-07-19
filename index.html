@@ -509,6 +509,12 @@
   // successfully generated image, plus "flashcard" slides for expressions/vocabulary
   // (no AI image needed — these are drawn as typographic cards, so they cost nothing
   // extra to generate and are always available even if scene image generation failed).
+  function buildIntroScene(result) {
+    var script = result.koreanSpeakScript;
+    if (!script || !String(script).trim()) return [];
+    return [{ kind: "intro", text: script }];
+  }
+
   function buildPhotoScenes(result) {
     var list = [];
     (result.scenes || []).forEach(function (s) {
@@ -550,21 +556,31 @@
     return list;
   }
 
+  // The intro (Korean speak script) always comes first, regardless of subtitle language —
+  // it's the opening of the video, not tied to the easy/natural/Korean study-language toggle.
   function buildPlayableScenes(result, lang) {
-    return buildPhotoScenes(result).concat(buildFlashcards(result, lang));
+    return buildIntroScene(result).concat(buildPhotoScenes(result)).concat(buildFlashcards(result, lang));
   }
 
   function renderScenes(result) {
     var scenes = result.scenes || [];
     var expressions = result.expressions || [];
     var vocabulary = result.vocabulary || [];
-    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0) {
+    var hasIntro = !!(result.koreanSpeakScript && String(result.koreanSpeakScript).trim());
+    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0 && !hasIntro) {
       return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면이 없어요.</p>';
     }
 
     var playable = buildPlayableScenes(result, null);
     var playBtn = playable.length > 0
       ? '<button class="btn" style="margin-bottom:14px;" data-action="open-player">▶ 슬라이드쇼로 보기</button>'
+      : "";
+
+    var introCard = hasIntro
+      ? '<div class="scene-card flash-card">' +
+          '<p class="flash-tag en">오프닝 · INTRO</p>' +
+          '<p class="flash-sub kr" style="font-size:14px; line-height:1.8;">' + escapeHtml(result.koreanSpeakScript) + "</p>" +
+        "</div>"
       : "";
 
     var sceneCards = scenes.map(function (s) {
@@ -583,7 +599,7 @@
       );
     }).join("");
 
-    var flashCards = playable.filter(function (s) { return s.kind !== "photo"; }).map(function (s) {
+    var flashCards = playable.filter(function (s) { return s.kind !== "photo" && s.kind !== "intro"; }).map(function (s) {
       var isKr = s.kind === "kr-expr" || s.kind === "kr-vocab";
       var tagLabel =
         s.kind === "expr" ? "EXPRESSION · 표현" :
@@ -601,7 +617,7 @@
       );
     }).join("");
 
-    return playBtn + '<div class="scene-list">' + sceneCards + flashCards + "</div>";
+    return playBtn + '<div class="scene-list">' + introCard + sceneCards + flashCards + "</div>";
   }
 
   function renderResultBlock(opts) {
@@ -625,6 +641,7 @@
       { id: "kr-expr", label: "한국어 표현" },
       { id: "kr-vocab", label: "한국어 단어" },
       { id: "script", label: "Speak Script" },
+      { id: "kr-script", label: "한국어 스크립트" },
       { id: "scenes", label: "Scenes" },
     ];
     var tabsHtml = tabs.map(function (t) {
@@ -646,6 +663,8 @@
       body = renderVocabList(result.koreanVocabulary, "kr", "en");
     } else if (state.resultTab === "script") {
       body = '<p class="en" style="font-size:14.5px; line-height:2; white-space:pre-wrap;">' + escapeHtml(result.speakScript) + "</p>";
+    } else if (state.resultTab === "kr-script") {
+      body = '<p class="kr" style="font-size:15px; line-height:1.9; white-space:pre-wrap;">' + escapeHtml(result.koreanSpeakScript) + "</p>";
     } else if (state.resultTab === "scenes") {
       body = renderScenes(result);
     }
@@ -824,8 +843,55 @@
     ctx.textAlign = "left";
   }
 
+  function drawIntroFrame(scene, t) {
+    var ctx = playerCtx;
+    var W = playerCanvas.width, H = playerCanvas.height;
+
+    ctx.fillStyle = "#EDEAE0"; // paper
+    ctx.fillRect(0, 0, W, H);
+
+    var te = easeInOutQuad(Math.min(1, t / 0.35));
+    var scale = 0.97 + 0.03 * te;
+
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(-W / 2, -H / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+
+    ctx.font = "600 " + Math.round(W * 0.02) + "px 'JetBrains Mono', monospace";
+    ctx.fillStyle = "#3E6259";
+    ctx.fillText("오프닝 · INTRO", W / 2, H * 0.24);
+
+    ctx.strokeStyle = "#C9C2AE";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.42, H * 0.28);
+    ctx.lineTo(W * 0.58, H * 0.28);
+    ctx.stroke();
+
+    var bodySize = Math.round(W * 0.026);
+    ctx.font = "500 " + bodySize + "px 'Noto Serif KR', serif";
+    ctx.fillStyle = "#26323A";
+    var lines = wrapCanvasText(ctx, scene.text || "", W * 0.78).slice(0, 7);
+    var lineHeight = bodySize * 1.7;
+    var totalHeight = (lines.length - 1) * lineHeight;
+    var startY = H / 2 - totalHeight / 2 + bodySize * 0.3;
+    lines.forEach(function (line, i) {
+      ctx.fillText(line, W / 2, startY + i * lineHeight);
+    });
+
+    ctx.restore();
+    ctx.textAlign = "left";
+  }
+
   function drawPlayerFrame(scene, t, index) {
     if (!playerCtx || !playerCanvas) return;
+    if (scene.kind === "intro") {
+      drawIntroFrame(scene, t);
+      return;
+    }
     if (scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab") {
       drawFlashcardFrame(scene, t);
       return;
@@ -924,9 +990,14 @@
     if (!scene) { playerRAF = null; return; }
 
     var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
-    var duration = isFlashcard
-      ? 3600
-      : computeSceneDurationMs(getSceneCaption(scene, state.player.subtitleLang), state.player.subtitleLang);
+    var duration;
+    if (scene.kind === "intro") {
+      duration = Math.max(5000, Math.min(20000, 1200 + (scene.text || "").length * 100));
+    } else if (isFlashcard) {
+      duration = 3600;
+    } else {
+      duration = computeSceneDurationMs(getSceneCaption(scene, state.player.subtitleLang), state.player.subtitleLang);
+    }
     var t = Math.min(1, playerElapsed / duration);
 
     drawPlayerFrame(scene, t, state.player.index);

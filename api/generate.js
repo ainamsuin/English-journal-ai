@@ -36,6 +36,7 @@ const PROMPT_TEXT = [
   '  "koreanExpressions": [{"phrase": "a natural or idiomatic Korean expression/phrase taken directly from the diary text itself", "meaning": "a clear English explanation of what this Korean expression means and when/how it is used"}],',
   '  "koreanVocabulary": [{"word": "a useful or notable Korean word taken directly from the diary text", "meaning": "a short English definition"}],',
   '  "speakScript": "a 30-60 second first-person spoken script in English, suitable for reading aloud on camera, starting with a casual greeting like \'Hi everyone.\'",',
+  '  "koreanSpeakScript": "a natural Korean version of the same spoken script — same content, structure, and casual first-person tone as speakScript, written for reading aloud in Korean (not a stiff literal translation)",',
   '  "youtubeTitle": "a short catchy title for a vlog/short based on this entry",',
   '  "hashtags": ["5 short hashtag strings without the # symbol"],',
   '  "scenes": [{"text": "the exact original Korean sentence(s) from the diary this scene covers", "easyCaption": "a short, simple English translation of just this scene, matching the tone/level of easyEnglish (A2 level)", "naturalCaption": "a natural, fluent English translation of just this scene, matching the tone of naturalEnglish", "imagePrompt": "a concrete, specific English description of the subject, setting, action and mood of this single scene, written for an image-generation model — describe WHAT is depicted, not an art style"}]',

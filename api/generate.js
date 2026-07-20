@@ -55,11 +55,11 @@ const PROMPT_TEXT = [
 // never by naming another brand, artist, or existing copyrighted work — so the result
 // is the user's own style, not an imitation of anyone else's.
 const IMAGE_STYLE_SUFFIX = [
-  "Visual style: a minimalist flat illustration with a calm, quiet, documentary mood.",
-  "Color palette limited strictly to muted, slightly faded tones — warm beige, ivory, charcoal, olive green, mustard yellow, and concrete gray. No bright, saturated, or neon colors.",
-  "Composition: generous negative space, simple geometric shapes, restrained brutalist-leaning structure softened by wabi-sabi imperfection (subtle grain, uneven edges, gentle asymmetry).",
-  "Feel: editorial magazine plate meets museum exhibition graphic — orderly, understated, a little poetic.",
-  "Flat vector-like shading only, no photorealism, no 3D render look, no gradients that mimic photography.",
+  "Visual style: minimalist flat vector illustration with a soft, warm, editorial-magazine feel — the kind of calm, considered artwork found in modern lifestyle and slow-living magazines.",
+  "Color palette: warm ivory, cream, sand, soft beige, and other muted neutral tones. Colors are gentle and desaturated — never bright, saturated, or neon.",
+  "Shapes and rendering: clean simplified geometric forms, smooth shading and soft gradients, no outlines, no harsh contrast, matte texture, minimal realism (not photorealistic, not a 3D render).",
+  "Perspective and lighting: a top-down or gently elevated perspective where it suits the scene, soft ambient lighting, subtle long shadows for quiet depth.",
+  "Composition: elegant and uncluttered, generous negative space, simplified detail, a high-end infographic / premium editorial-illustration polish — sophisticated and calming, never busy.",
   "No text, no letters, no logos, no watermarks, no signature anywhere in the image.",
   "This must be an entirely original composition, not a copy or close imitation of any existing artwork, character, brand, or artist's style.",
 ].join(" ");

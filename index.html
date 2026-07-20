@@ -347,6 +347,7 @@
   var audioMuted = false;
   var transitionNoteIndex = 0;
   var arpeggioStep = 0;
+  var audioPhase = "main"; // "intro" (calm/spacious) | "main" (bright/bouncy)
 
   function render() {
     var html = '<div class="wrap">';
@@ -963,6 +964,8 @@
     var scene = scenes[state.player.index];
     if (!scene) { playerRAF = null; return; }
 
+    updateAudioPhaseForScene(scene);
+
     var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
     var duration;
     if (scene.kind === "intro") {
@@ -1061,6 +1064,7 @@
       audioNextPluckTime = audioCtx.currentTime + 0.5;
       transitionNoteIndex = 0;
       arpeggioStep = 0;
+      audioPhase = (state.player.scenes[0] && state.player.scenes[0].kind === "intro") ? "intro" : "main";
       audioScheduler = setInterval(scheduleAmbientAudio, 300);
       scheduleAmbientAudio();
     } catch (e) {
@@ -1075,14 +1079,59 @@
     if (!audioCtx) return;
     var now = audioCtx.currentTime;
     var lookahead = 2.0;
-    while (audioNextPadTime < now + lookahead) {
-      playAmbientPad(audioNextPadTime);
-      audioNextPadTime += 6 + Math.random() * 2;
+    if (audioPhase === "intro") {
+      while (audioNextPadTime < now + lookahead) {
+        playIntroPad(audioNextPadTime);
+        audioNextPadTime += 10 + Math.random() * 3;
+      }
+      // No rhythmic plucks during the opening — kept calm and spacious on purpose.
+    } else {
+      while (audioNextPadTime < now + lookahead) {
+        playAmbientPad(audioNextPadTime);
+        audioNextPadTime += 6 + Math.random() * 2;
+      }
+      while (audioNextPluckTime < now + lookahead) {
+        playAmbientPluck(audioNextPluckTime);
+        audioNextPluckTime += 0.42; // steady, bouncy pulse instead of sparse random timing
+      }
     }
-    while (audioNextPluckTime < now + lookahead) {
-      playAmbientPluck(audioNextPluckTime);
-      audioNextPluckTime += 0.42; // steady, bouncy pulse instead of sparse random timing
+  }
+
+  // Checks whether the currently-playing scene calls for a different BGM phase, and if so
+  // switches immediately (also nudging the next scheduled notes to fire right away) so the
+  // music noticeably changes character right at the intro → main-content transition.
+  function updateAudioPhaseForScene(scene) {
+    var newPhase = scene && scene.kind === "intro" ? "intro" : "main";
+    if (newPhase === audioPhase) return;
+    audioPhase = newPhase;
+    if (audioCtx) {
+      audioNextPadTime = audioCtx.currentTime + 0.05;
+      audioNextPluckTime = audioCtx.currentTime + 0.05;
     }
+  }
+
+  // Calm, spacious pad used only during the opening — open fifth (no third, deliberately
+  // more neutral/atmospheric), lower register, longer and quieter than the main pad, and
+  // paired with no rhythmic plucks, so the opening clearly sounds different from the story.
+  function playIntroPad(startTime) {
+    var root = PENTATONIC[Math.floor(Math.random() * 3)] / 2;
+    var dur = 12;
+    var intervals = [1, 1.4983, 2];
+    intervals.forEach(function (mult, i) {
+      var freq = root * mult;
+      var osc = audioCtx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      var g = audioCtx.createGain();
+      var peak = 0.05 - i * 0.01;
+      g.gain.setValueAtTime(0, startTime);
+      g.gain.linearRampToValueAtTime(peak, startTime + dur * 0.4);
+      g.gain.linearRampToValueAtTime(0, startTime + dur);
+      osc.connect(g);
+      g.connect(audioMasterGain);
+      osc.start(startTime);
+      osc.stop(startTime + dur + 0.1);
+    });
   }
 
   function playAmbientPad(startTime) {

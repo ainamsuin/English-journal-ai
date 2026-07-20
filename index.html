@@ -520,13 +520,14 @@
     return list;
   }
 
-  // A quick-cut "trailer" montage through the same photo scenes, played once at the very
-  // start of the slideshow before the full-paced version with captions. No text card, no
-  // narration — just fast flashes through the diary's own images.
-  function buildFlashMontage(result) {
-    return buildPhotoScenes(result).map(function (p) {
-      return { kind: "flash", image: p.image };
-    });
+  // A readable opening: the full Korean script overlaid on top of the diary's own photos,
+  // which cycle slowly underneath (not a static background) while the text stays on screen
+  // long enough to actually read. No narration — just text + a slowly changing backdrop.
+  function buildIntroScene(result) {
+    var script = result.koreanSpeakScript;
+    if (!script || !String(script).trim()) return [];
+    var photoCount = buildPhotoScenes(result).length;
+    return [{ kind: "intro", text: script, photoCount: photoCount }];
   }
 
   // lang === "ko" -> only Korean expr/vocab flashcards. lang === "easy"/"natural" -> only
@@ -560,23 +561,31 @@
     return list;
   }
 
-  // The flash montage always comes first, regardless of subtitle language — it's a quick
-  // preview of the diary's images, not tied to the easy/natural/Korean study-language toggle.
+  // The intro always comes first, regardless of subtitle language — it's the opening of
+  // the video, not tied to the easy/natural/Korean study-language toggle.
   function buildPlayableScenes(result, lang) {
-    return buildFlashMontage(result).concat(buildPhotoScenes(result)).concat(buildFlashcards(result, lang));
+    return buildIntroScene(result).concat(buildPhotoScenes(result)).concat(buildFlashcards(result, lang));
   }
 
   function renderScenes(result) {
     var scenes = result.scenes || [];
     var expressions = result.expressions || [];
     var vocabulary = result.vocabulary || [];
-    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0) {
+    var hasIntro = !!(result.koreanSpeakScript && String(result.koreanSpeakScript).trim());
+    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0 && !hasIntro) {
       return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면이 없어요.</p>';
     }
 
     var playable = buildPlayableScenes(result, null);
     var playBtn = playable.length > 0
       ? '<button class="btn" style="margin-bottom:14px;" data-action="open-player">▶ 슬라이드쇼로 보기</button>'
+      : "";
+
+    var introCard = hasIntro
+      ? '<div class="scene-card flash-card">' +
+          '<p class="flash-tag en">오프닝 · INTRO</p>' +
+          '<p class="flash-sub kr" style="font-size:14px; line-height:1.8;">' + escapeHtml(result.koreanSpeakScript) + "</p>" +
+        "</div>"
       : "";
 
     var sceneCards = scenes.map(function (s) {
@@ -595,7 +604,7 @@
       );
     }).join("");
 
-    var flashCards = playable.filter(function (s) { return s.kind !== "photo" && s.kind !== "flash"; }).map(function (s) {
+    var flashCards = playable.filter(function (s) { return s.kind !== "photo" && s.kind !== "intro"; }).map(function (s) {
       var isKr = s.kind === "kr-expr" || s.kind === "kr-vocab";
       var tagLabel =
         s.kind === "expr" ? "EXPRESSION · 표현" :
@@ -613,7 +622,7 @@
       );
     }).join("");
 
-    return playBtn + '<div class="scene-list">' + sceneCards + flashCards + "</div>";
+    return playBtn + '<div class="scene-list">' + introCard + sceneCards + flashCards + "</div>";
   }
 
   function renderResultBlock(opts) {
@@ -839,34 +848,70 @@
     ctx.textAlign = "left";
   }
 
-  function drawFlashFrame(scene, t, index) {
+  function drawOpeningFrame(scene, t, elapsedMs) {
     var ctx = playerCtx;
     var W = playerCanvas.width, H = playerCanvas.height;
 
     ctx.fillStyle = "#1A2420";
     ctx.fillRect(0, 0, W, H);
 
-    var img = playerImages[index];
-    if (img && img.complete && img.naturalWidth) {
-      var snap = 1.1 - 0.1 * Math.min(1, t * 3); // quick snap-in, settles almost immediately
-      var baseScale = Math.max(W / img.naturalWidth, H / img.naturalHeight) * snap;
-      var dw = img.naturalWidth * baseScale, dh = img.naturalHeight * baseScale;
-      var dx = (W - dw) / 2, dy = (H - dh) / 2;
-      ctx.drawImage(img, dx, dy, dw, dh);
+    // Background: the diary's own photos cycling slowly underneath the text, so the
+    // opening isn't just a static card but still gives text enough time to be read.
+    if (scene.photoCount > 0) {
+      var cycleIdx = Math.floor((elapsedMs || 0) / 1600) % scene.photoCount;
+      var img = playerImages[1 + cycleIdx];
+      if (img && img.complete && img.naturalWidth) {
+        var baseScale = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+        var dw = img.naturalWidth * baseScale, dh = img.naturalHeight * baseScale;
+        var dx = (W - dw) / 2, dy = (H - dh) / 2;
+        ctx.drawImage(img, dx, dy, dw, dh);
+      }
     }
 
-    // Quick white flash on entry for a punchy, trailer-like cut.
-    var flashAlpha = Math.max(0, 0.4 - t * 2.2);
-    if (flashAlpha > 0) {
-      ctx.fillStyle = "rgba(255,255,255," + flashAlpha + ")";
-      ctx.fillRect(0, 0, W, H);
-    }
+    // Dark scrim so the overlaid text stays legible regardless of the background photo.
+    ctx.fillStyle = "rgba(20, 24, 20, 0.62)";
+    ctx.fillRect(0, 0, W, H);
+
+    var te = easeInOutQuad(Math.min(1, t / 0.3));
+    var scale = 0.97 + 0.03 * te;
+
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(-W / 2, -H / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+
+    ctx.font = "600 " + Math.round(W * 0.02) + "px 'JetBrains Mono', monospace";
+    ctx.fillStyle = "rgba(240, 235, 220, 0.85)";
+    ctx.fillText("오프닝 · INTRO", W / 2, H * 0.26);
+
+    ctx.strokeStyle = "rgba(240, 235, 220, 0.4)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.42, H * 0.3);
+    ctx.lineTo(W * 0.58, H * 0.3);
+    ctx.stroke();
+
+    var bodySize = Math.round(W * 0.027);
+    ctx.font = "500 " + bodySize + "px 'Noto Serif KR', serif";
+    ctx.fillStyle = "#F7F5EC";
+    var lines = wrapCanvasText(ctx, scene.text || "", W * 0.8).slice(0, 8);
+    var lineHeight = bodySize * 1.7;
+    var totalHeight = (lines.length - 1) * lineHeight;
+    var startY = H / 2 - totalHeight / 2 + bodySize * 0.3;
+    lines.forEach(function (line, i) {
+      ctx.fillText(line, W / 2, startY + i * lineHeight);
+    });
+
+    ctx.restore();
+    ctx.textAlign = "left";
   }
 
-  function drawPlayerFrame(scene, t, index) {
+  function drawPlayerFrame(scene, t, index, elapsedMs) {
     if (!playerCtx || !playerCanvas) return;
-    if (scene.kind === "flash") {
-      drawFlashFrame(scene, t, index);
+    if (scene.kind === "intro") {
+      drawOpeningFrame(scene, t, elapsedMs);
       return;
     }
     if (scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab") {
@@ -968,8 +1013,8 @@
 
     var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
     var duration;
-    if (scene.kind === "flash") {
-      duration = 380;
+    if (scene.kind === "intro") {
+      duration = Math.max(6000, Math.min(25000, 1500 + (scene.text || "").length * 90));
     } else if (isFlashcard) {
       duration = 3600;
     } else {
@@ -977,7 +1022,7 @@
     }
     var t = Math.min(1, playerElapsed / duration);
 
-    drawPlayerFrame(scene, t, state.player.index);
+    drawPlayerFrame(scene, t, state.player.index, playerElapsed);
 
     if (state.player.exporting) {
       var overall = (state.player.index + t) / scenes.length;
@@ -988,17 +1033,11 @@
     }
 
     if (t >= 1 && advancing) {
-      var oldKind = scene.kind;
       playerElapsed = 0;
       if (state.player.index < scenes.length - 1) {
         state.player.index++;
         updatePlayerDots();
-        var newKind = scenes[state.player.index].kind;
-        // Skip the chime during rapid flash-montage cuts (too fast to sound good), but still
-        // ring it the moment the montage ends and the full-paced story begins.
-        if (audioCtx && !(oldKind === "flash" && newKind === "flash")) {
-          playSceneTransitionAccent(audioCtx.currentTime + 0.02);
-        }
+        if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
       } else if (state.player.exporting) {
         finishExportRecording();
         return;
@@ -1097,12 +1136,15 @@
   function playAmbientPad(startTime) {
     var root = PENTATONIC[Math.floor(Math.random() * 3)]; // brighter register (no octave-down)
     var dur = 8;
-    [root, root * 1.5, root * 2].forEach(function (freq, i) {
+    // root, major 3rd, perfect 5th, octave — a full major chord, not just an ambiguous open fifth.
+    var intervals = [1, 1.2599, 1.4983, 2];
+    intervals.forEach(function (mult, i) {
+      var freq = root * mult;
       var osc = audioCtx.createOscillator();
-      osc.type = i === 2 ? "triangle" : "sine"; // top voice gets a touch more harmonic sparkle
+      osc.type = i === 3 ? "triangle" : "sine"; // top voice gets a touch more harmonic sparkle
       osc.frequency.value = freq;
       var g = audioCtx.createGain();
-      var peak = 0.07 - i * 0.014;
+      var peak = 0.065 - i * 0.011;
       g.gain.setValueAtTime(0, startTime);
       g.gain.linearRampToValueAtTime(peak, startTime + dur * 0.3);
       g.gain.linearRampToValueAtTime(0, startTime + dur);

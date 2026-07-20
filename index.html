@@ -348,6 +348,8 @@
   var transitionNoteIndex = 0;
   var arpeggioStep = 0;
   var audioPhase = "main"; // "intro" (calm/spacious) | "main" (bright/bouncy)
+  var currentBassRoot = 261.63;
+  var noiseBuffer = null;
 
   function render() {
     var html = '<div class="wrap">';
@@ -1060,6 +1062,11 @@
       filter.connect(audioCtx.destination);
       filter.connect(audioDestNode);
 
+      var noiseLen = Math.floor(audioCtx.sampleRate * 0.2);
+      noiseBuffer = audioCtx.createBuffer(1, noiseLen, audioCtx.sampleRate);
+      var noiseData = noiseBuffer.getChannelData(0);
+      for (var ni = 0; ni < noiseLen; ni++) noiseData[ni] = Math.random() * 2 - 1;
+
       audioNextPadTime = audioCtx.currentTime + 0.2;
       audioNextPluckTime = audioCtx.currentTime + 0.5;
       transitionNoteIndex = 0;
@@ -1091,7 +1098,7 @@
         audioNextPadTime += 6 + Math.random() * 2;
       }
       while (audioNextPluckTime < now + lookahead) {
-        playAmbientPluck(audioNextPluckTime);
+        playArpeggioStep(audioNextPluckTime);
         audioNextPluckTime += 0.42; // steady, bouncy pulse instead of sparse random timing
       }
     }
@@ -1136,6 +1143,7 @@
 
   function playAmbientPad(startTime) {
     var root = PENTATONIC[Math.floor(Math.random() * 3)]; // brighter register (no octave-down)
+    currentBassRoot = root;
     var dur = 8;
     // root, major 3rd, perfect 5th, octave — a full major chord, not just an ambiguous open fifth.
     var intervals = [1, 1.2599, 1.4983, 2];
@@ -1156,21 +1164,105 @@
     });
   }
 
-  function playAmbientPluck(startTime) {
-    var idx = ARPEGGIO_PATTERN[arpeggioStep % ARPEGGIO_PATTERN.length];
+  // Orchestrates one step of the main-phase groove: an alternating marimba/plucked-string
+  // melody note every step, a bass note reinforcing the harmony on strong beats, and a
+  // light shaker for rhythmic texture on off-beats — several distinct timbres instead of
+  // one repeated tone, for a fuller, more upbeat "little band" feel.
+  function playArpeggioStep(startTime) {
+    var step = arpeggioStep;
+    var idx = ARPEGGIO_PATTERN[step % ARPEGGIO_PATTERN.length];
     arpeggioStep++;
     var freq = EXTENDED_SCALE[idx % EXTENDED_SCALE.length];
+
+    if (step % 2 === 0) {
+      playMarimbaNote(startTime, freq);
+    } else {
+      playPluckedString(startTime, freq);
+    }
+    if (step % 4 === 0) {
+      playBassNote(startTime);
+    }
+    if (step % 2 === 1) {
+      playShaker(startTime);
+    }
+  }
+
+  // Mallet-like: triangle wave through a filter that sweeps down quickly, giving a
+  // woody, percussive "marimba" character.
+  function playMarimbaNote(startTime, freq) {
     var osc = audioCtx.createOscillator();
     osc.type = "triangle";
     osc.frequency.value = freq;
+    var filter = audioCtx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(freq * 4, startTime);
+    filter.frequency.exponentialRampToValueAtTime(freq * 1.2, startTime + 0.15);
     var g = audioCtx.createGain();
     g.gain.setValueAtTime(0, startTime);
-    g.gain.linearRampToValueAtTime(0.13, startTime + 0.015);
-    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.38);
+    g.gain.linearRampToValueAtTime(0.14, startTime + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.36);
+    osc.connect(filter);
+    filter.connect(g);
+    g.connect(audioMasterGain);
+    osc.start(startTime);
+    osc.stop(startTime + 0.4);
+  }
+
+  // Plucked-string-like: sawtooth through a resonant lowpass filter that sweeps down,
+  // brighter attack than the marimba for contrast.
+  function playPluckedString(startTime, freq) {
+    var osc = audioCtx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.value = freq;
+    var filter = audioCtx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.Q.value = 3;
+    filter.frequency.setValueAtTime(freq * 6, startTime);
+    filter.frequency.exponentialRampToValueAtTime(freq * 1.5, startTime + 0.25);
+    var g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, startTime);
+    g.gain.linearRampToValueAtTime(0.08, startTime + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.5);
+    osc.connect(filter);
+    filter.connect(g);
+    g.connect(audioMasterGain);
+    osc.start(startTime);
+    osc.stop(startTime + 0.55);
+  }
+
+  // Soft sine bass note, one octave below the current chord's root, on strong beats only.
+  function playBassNote(startTime) {
+    var freq = currentBassRoot / 2;
+    var osc = audioCtx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    var g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, startTime);
+    g.gain.linearRampToValueAtTime(0.09, startTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.5);
     osc.connect(g);
     g.connect(audioMasterGain);
     osc.start(startTime);
-    osc.stop(startTime + 0.42);
+    osc.stop(startTime + 0.55);
+  }
+
+  // Light noise-burst shaker for rhythmic texture between the melody notes.
+  function playShaker(startTime) {
+    if (!noiseBuffer) return;
+    var src = audioCtx.createBufferSource();
+    src.buffer = noiseBuffer;
+    var filter = audioCtx.createBiquadFilter();
+    filter.type = "highpass";
+    filter.frequency.value = 5000;
+    var g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, startTime);
+    g.gain.linearRampToValueAtTime(0.045, startTime + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.09);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(audioMasterGain);
+    src.start(startTime);
+    src.stop(startTime + 0.1);
   }
 
   // A brighter, more prominent chime played right on scene transitions (as opposed to
@@ -1226,6 +1318,7 @@
     audioCtx = null;
     audioMasterGain = null;
     audioDestNode = null;
+    noiseBuffer = null;
   }
 
   function togglePlayerAudioMute() {

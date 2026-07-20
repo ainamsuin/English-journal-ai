@@ -520,9 +520,9 @@
     return list;
   }
 
-  // A readable opening: the full Korean script overlaid on top of the diary's own photos,
-  // which cycle slowly underneath (not a static background) while the text stays on screen
-  // long enough to actually read. No narration — just text + a slowly changing backdrop.
+  // A quiet opening: the diary's own photos cycling underneath, no text rendered on
+  // screen — but its duration is still paced to match how long the Korean script would
+  // take to read, so the opening lasts as long as that script is.
   function buildIntroScene(result) {
     var script = result.koreanSpeakScript;
     if (!script || !String(script).trim()) return [];
@@ -571,21 +571,13 @@
     var scenes = result.scenes || [];
     var expressions = result.expressions || [];
     var vocabulary = result.vocabulary || [];
-    var hasIntro = !!(result.koreanSpeakScript && String(result.koreanSpeakScript).trim());
-    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0 && !hasIntro) {
+    if (scenes.length === 0 && expressions.length === 0 && vocabulary.length === 0) {
       return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면이 없어요.</p>';
     }
 
     var playable = buildPlayableScenes(result, null);
     var playBtn = playable.length > 0
       ? '<button class="btn" style="margin-bottom:14px;" data-action="open-player">▶ 슬라이드쇼로 보기</button>'
-      : "";
-
-    var introCard = hasIntro
-      ? '<div class="scene-card flash-card">' +
-          '<p class="flash-tag en">오프닝 · INTRO</p>' +
-          '<p class="flash-sub kr" style="font-size:14px; line-height:1.8;">' + escapeHtml(result.koreanSpeakScript) + "</p>" +
-        "</div>"
       : "";
 
     var sceneCards = scenes.map(function (s) {
@@ -622,7 +614,7 @@
       );
     }).join("");
 
-    return playBtn + '<div class="scene-list">' + introCard + sceneCards + flashCards + "</div>";
+    return playBtn + '<div class="scene-list">' + sceneCards + flashCards + "</div>";
   }
 
   function renderResultBlock(opts) {
@@ -855,8 +847,7 @@
     ctx.fillStyle = "#1A2420";
     ctx.fillRect(0, 0, W, H);
 
-    // Background: the diary's own photos cycling slowly underneath the text, so the
-    // opening isn't just a static card but still gives text enough time to be read.
+    // A quiet cycle through the diary's own photos, no text overlay.
     if (scene.photoCount > 0) {
       var cycleIdx = Math.floor((elapsedMs || 0) / 1600) % scene.photoCount;
       var img = playerImages[1 + cycleIdx];
@@ -867,45 +858,6 @@
         ctx.drawImage(img, dx, dy, dw, dh);
       }
     }
-
-    // Dark scrim so the overlaid text stays legible regardless of the background photo.
-    ctx.fillStyle = "rgba(20, 24, 20, 0.62)";
-    ctx.fillRect(0, 0, W, H);
-
-    var te = easeInOutQuad(Math.min(1, t / 0.3));
-    var scale = 0.97 + 0.03 * te;
-
-    ctx.save();
-    ctx.translate(W / 2, H / 2);
-    ctx.scale(scale, scale);
-    ctx.translate(-W / 2, -H / 2);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-
-    ctx.font = "600 " + Math.round(W * 0.02) + "px 'JetBrains Mono', monospace";
-    ctx.fillStyle = "rgba(240, 235, 220, 0.85)";
-    ctx.fillText("오프닝 · INTRO", W / 2, H * 0.26);
-
-    ctx.strokeStyle = "rgba(240, 235, 220, 0.4)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(W * 0.42, H * 0.3);
-    ctx.lineTo(W * 0.58, H * 0.3);
-    ctx.stroke();
-
-    var bodySize = Math.round(W * 0.027);
-    ctx.font = "500 " + bodySize + "px 'Noto Serif KR', serif";
-    ctx.fillStyle = "#F7F5EC";
-    var lines = wrapCanvasText(ctx, scene.text || "", W * 0.8).slice(0, 8);
-    var lineHeight = bodySize * 1.7;
-    var totalHeight = (lines.length - 1) * lineHeight;
-    var startY = H / 2 - totalHeight / 2 + bodySize * 0.3;
-    lines.forEach(function (line, i) {
-      ctx.fillText(line, W / 2, startY + i * lineHeight);
-    });
-
-    ctx.restore();
-    ctx.textAlign = "left";
   }
 
   function drawPlayerFrame(scene, t, index, elapsedMs) {

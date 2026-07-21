@@ -339,6 +339,7 @@
   // Not part of `state` because these are live rendering handles (canvas, recorder,
   // in-flight animation frame) rather than serializable UI state.
   var activeResultForPlayer = null;
+  var activePhotosForPlayer = [];
   var playerCanvas = null, playerCtx = null, playerImages = [];
   var playerRAF = null, playerElapsed = 0, playerLastTs = null;
   var mediaRecorder = null, recordedChunks = [], exportedVideoBlob = null;
@@ -350,6 +351,7 @@
   var audioPhase = "main"; // "intro" (calm/spacious) | "main" (bright/bouncy)
   var currentBassRoot = 261.63;
   var noiseBuffer = null;
+  var introBgImageObjs = [];
 
   function render() {
     var html = '<div class="wrap">';
@@ -523,14 +525,17 @@
     return list;
   }
 
-  // A quiet opening: the diary's own photos cycling underneath, no text rendered on
+  // A quiet opening: the user's own uploaded photos cycling underneath (falling back to
+  // the AI-generated scene images if no photos were uploaded), no text rendered on
   // screen — but its duration is still paced to match how long the Korean script would
   // take to read, so the opening lasts as long as that script is.
-  function buildIntroScene(result) {
+  function buildIntroScene(result, photos) {
     var script = result.koreanSpeakScript;
     if (!script || !String(script).trim()) return [];
-    var photoCount = buildPhotoScenes(result).length;
-    return [{ kind: "intro", text: script, photoCount: photoCount }];
+    var uploaded = (photos || []).filter(Boolean);
+    var bgImages = uploaded.length > 0 ? uploaded : buildPhotoScenes(result).map(function (p) { return p.image; });
+    if (bgImages.length === 0) return [];
+    return [{ kind: "intro", text: script, photoCount: bgImages.length, bgImages: bgImages }];
   }
 
   // lang === "ko" -> only Korean expr/vocab flashcards. lang === "easy"/"natural" -> only
@@ -566,8 +571,8 @@
 
   // The intro always comes first, regardless of subtitle language — it's the opening of
   // the video, not tied to the easy/natural/Korean study-language toggle.
-  function buildPlayableScenes(result, lang) {
-    return buildIntroScene(result).concat(buildPhotoScenes(result)).concat(buildFlashcards(result, lang));
+  function buildPlayableScenes(result, lang, photos) {
+    return buildIntroScene(result, photos).concat(buildPhotoScenes(result)).concat(buildFlashcards(result, lang));
   }
 
   function renderScenes(result) {
@@ -623,6 +628,7 @@
   function renderResultBlock(opts) {
     var result = opts.result, korean = opts.korean, photos = opts.photos || [], readOnly = opts.readOnly;
     activeResultForPlayer = result;
+    activePhotosForPlayer = photos;
     var titleField = !readOnly
       ? '<div style="margin-bottom:16px;"><label class="field-label">제목</label>' +
         '<input class="input" id="title-input" placeholder="이 기록의 제목을 붙여주세요" value="' + escapeHtml(opts.title) + '" /></div>'
@@ -850,10 +856,10 @@
     ctx.fillStyle = "#1A2420";
     ctx.fillRect(0, 0, W, H);
 
-    // A quiet cycle through the diary's own photos, no text overlay.
-    if (scene.photoCount > 0) {
-      var cycleIdx = Math.floor((elapsedMs || 0) / 1600) % scene.photoCount;
-      var img = playerImages[1 + cycleIdx];
+    // A quiet cycle through the uploaded (or fallback AI-scene) photos, no text overlay.
+    if (introBgImageObjs.length > 0) {
+      var cycleIdx = Math.floor((elapsedMs || 0) / 1600) % introBgImageObjs.length;
+      var img = introBgImageObjs[cycleIdx];
       if (img && img.complete && img.naturalWidth) {
         var baseScale = Math.max(W / img.naturalWidth, H / img.naturalHeight);
         var dw = img.naturalWidth * baseScale, dh = img.naturalHeight * baseScale;
@@ -1017,6 +1023,19 @@
         img.onload = function () { playerImages[i] = img; resolve(); };
         img.onerror = function () { resolve(); };
         img.src = s.image;
+      });
+    }));
+  }
+
+  function preloadIntroBgImages(urls) {
+    var list = (urls || []).filter(Boolean);
+    introBgImageObjs = list.map(function () { return null; });
+    return Promise.all(list.map(function (url, i) {
+      return new Promise(function (resolve) {
+        var img = new Image();
+        img.onload = function () { introBgImageObjs[i] = img; resolve(); };
+        img.onerror = function () { resolve(); };
+        img.src = url;
       });
     }));
   }
@@ -1329,10 +1348,10 @@
     return audioMuted;
   }
 
-  function openPlayer(result) {
+  function openPlayer(result, photos) {
     var initialLang = "ko";
-    var usable = buildPlayableScenes(result || {}, initialLang);
-    if (usable.length === 0) usable = buildPlayableScenes(result || {}, null);
+    var usable = buildPlayableScenes(result || {}, initialLang, photos);
+    if (usable.length === 0) usable = buildPlayableScenes(result || {}, null, photos);
     if (usable.length === 0) return;
     state.player = {
       active: true,
@@ -1350,7 +1369,11 @@
     render();
     startPlayerAudio();
     var fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
-    fontsReady.then(function () { return preloadPlayerImages(usable); }).then(function () {
+    var introBgUrls = (usable[0] && usable[0].kind === "intro") ? usable[0].bgImages : [];
+    Promise.all([
+      fontsReady.then(function () { return preloadPlayerImages(usable); }),
+      preloadIntroBgImages(introBgUrls),
+    ]).then(function () {
       if (!state.player.active) return; // closed before images finished loading
       startPlayerLoop();
     });
@@ -1367,7 +1390,7 @@
     if (state.player.videoUrl) URL.revokeObjectURL(state.player.videoUrl);
     exportedVideoBlob = null;
     state.player = { active: false, scenes: [], subtitleLang: "ko", index: 0, playing: false, exporting: false, exportDone: false, exportError: "", videoUrl: "", videoExt: "webm", muted: audioMuted };
-    playerCanvas = null; playerCtx = null; playerImages = [];
+    playerCanvas = null; playerCtx = null; playerImages = []; introBgImageObjs = [];
     render();
   }
 
@@ -1647,7 +1670,7 @@
       state.view = "home";
       render();
     } else if (action === "open-player") {
-      openPlayer(activeResultForPlayer);
+      openPlayer(activeResultForPlayer, activePhotosForPlayer);
     } else if (action === "close-player") {
       closePlayer();
     } else if (action === "player-toggle-play") {
@@ -1675,7 +1698,7 @@
         el.classList.toggle("active", el.getAttribute("data-lang") === newLang);
       });
       if (activeResultForPlayer) {
-        var rebuilt = buildPlayableScenes(activeResultForPlayer, newLang);
+        var rebuilt = buildPlayableScenes(activeResultForPlayer, newLang, activePhotosForPlayer);
         if (rebuilt.length > 0) {
           state.player.scenes = rebuilt;
           while (playerImages.length < rebuilt.length) playerImages.push(null);

@@ -857,11 +857,17 @@
     ctx.fillRect(0, 0, W, H);
 
     // A quiet cycle through the uploaded (or fallback AI-scene) photos, no text overlay.
+    // Each photo is shown exactly once (no looping back through the list). Landscape
+    // photos fill the frame; portrait photos are shown in full with letterbox margins
+    // instead of being cropped.
     if (introBgImageObjs.length > 0) {
-      var cycleIdx = Math.floor((elapsedMs || 0) / 1600) % introBgImageObjs.length;
+      var cycleIdx = Math.min(introBgImageObjs.length - 1, Math.floor((elapsedMs || 0) / 1500));
       var img = introBgImageObjs[cycleIdx];
       if (img && img.complete && img.naturalWidth) {
-        var baseScale = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+        var isLandscape = img.naturalWidth >= img.naturalHeight;
+        var baseScale = isLandscape
+          ? Math.max(W / img.naturalWidth, H / img.naturalHeight)
+          : Math.min(W / img.naturalWidth, H / img.naturalHeight);
         var dw = img.naturalWidth * baseScale, dh = img.naturalHeight * baseScale;
         var dx = (W - dw) / 2, dy = (H - dh) / 2;
         ctx.drawImage(img, dx, dy, dw, dh);
@@ -977,7 +983,7 @@
     var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
     var duration;
     if (scene.kind === "intro") {
-      duration = Math.max(6000, Math.min(25000, 1500 + (scene.text || "").length * 90));
+      duration = Math.max(1500, (scene.photoCount || 1) * 1500);
     } else if (isFlashcard) {
       duration = 3600;
     } else {

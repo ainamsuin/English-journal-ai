@@ -965,6 +965,30 @@
     if (container) container.innerHTML = renderDotsMarkup(state.player.scenes.length, state.player.index);
   }
 
+  // requestAnimationFrame is paused entirely by the browser when the tab is hidden/
+  // backgrounded — fine for live preview, but if that happens mid-export the canvas
+  // (and therefore the recorded video) freezes on its last frame while the Web Audio
+  // graph keeps playing on its own thread regardless (which is why sound keeps going
+  // but the picture stops). setTimeout is only throttled in background tabs, not fully
+  // suspended, so we use it instead specifically while exporting.
+  var playerUsingTimeout = false;
+
+  function scheduleNextPlayerFrame() {
+    if (state.player.exporting) {
+      playerUsingTimeout = true;
+      playerRAF = setTimeout(function () { stepPlayer(performance.now()); }, 1000 / 30);
+    } else {
+      playerUsingTimeout = false;
+      playerRAF = requestAnimationFrame(stepPlayer);
+    }
+  }
+
+  function cancelPlayerFrame() {
+    if (!playerRAF) return;
+    if (playerUsingTimeout) clearTimeout(playerRAF); else cancelAnimationFrame(playerRAF);
+    playerRAF = null;
+  }
+
   function stepPlayer(ts) {
     if (!state.player.active) { playerRAF = null; return; }
     if (playerLastTs === null) playerLastTs = ts;
@@ -1017,7 +1041,7 @@
       }
     }
 
-    playerRAF = requestAnimationFrame(stepPlayer);
+    scheduleNextPlayerFrame();
   }
 
   function preloadPlayerImages(scenes) {
@@ -1050,10 +1074,10 @@
     playerCanvas = document.getElementById("kb-canvas");
     if (!playerCanvas) return;
     playerCtx = playerCanvas.getContext("2d");
-    if (playerRAF) cancelAnimationFrame(playerRAF);
+    cancelPlayerFrame();
     playerElapsed = 0;
     playerLastTs = null;
-    playerRAF = requestAnimationFrame(stepPlayer);
+    scheduleNextPlayerFrame();
   }
 
   // ---------------------------------------------------------------------
@@ -1391,7 +1415,7 @@
       if (mediaRecorder.state !== "inactive") { try { mediaRecorder.stop(); } catch (e) {} }
       mediaRecorder = null;
     }
-    if (playerRAF) { cancelAnimationFrame(playerRAF); playerRAF = null; }
+    if (playerRAF) { cancelPlayerFrame(); }
     stopPlayerAudio();
     if (state.player.videoUrl) URL.revokeObjectURL(state.player.videoUrl);
     exportedVideoBlob = null;
@@ -1465,8 +1489,8 @@
       mediaRecorder.start();
       playerElapsed = 0;
       playerLastTs = null;
-      if (playerRAF) cancelAnimationFrame(playerRAF);
-      playerRAF = requestAnimationFrame(stepPlayer);
+      cancelPlayerFrame();
+      scheduleNextPlayerFrame();
     });
   }
 
@@ -1474,7 +1498,7 @@
     if (mediaRecorder && mediaRecorder.state !== "inactive") {
       mediaRecorder.stop(); // onstop handler above finalizes the blob + re-renders
     }
-    if (playerRAF) { cancelAnimationFrame(playerRAF); playerRAF = null; }
+    cancelPlayerFrame();
   }
 
   function cancelExport() {
@@ -1483,7 +1507,7 @@
       if (mediaRecorder.state !== "inactive") { try { mediaRecorder.stop(); } catch (e) {} }
       mediaRecorder = null;
     }
-    if (playerRAF) { cancelAnimationFrame(playerRAF); playerRAF = null; }
+    if (playerRAF) { cancelPlayerFrame(); }
     state.player.exporting = false;
     state.player.index = 0;
     state.player.playing = true;

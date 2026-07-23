@@ -206,7 +206,6 @@
     player: {
       active: false,
       scenes: [],
-      subtitleLang: "ko", // ko | easy | natural
       index: 0,
       playing: false,
       exporting: false,
@@ -515,14 +514,32 @@
   // successfully generated image, plus "flashcard" slides for expressions/vocabulary
   // (no AI image needed — these are drawn as typographic cards, so they cost nothing
   // extra to generate and are always available even if scene image generation failed).
-  function buildPhotoScenes(result) {
+  // One pass through the diary scenes for a given act ("easy" or "natural") — each entry
+  // carries the Korean original AND the matching English caption together, since both are
+  // shown on screen at the same time now.
+  function buildActPhotoScenes(result, actLang) {
     var list = [];
     (result.scenes || []).forEach(function (s) {
       if (s && s.image) {
-        list.push({ kind: "photo", text: s.text, easyCaption: s.easyCaption, naturalCaption: s.naturalCaption, image: s.image });
+        list.push({
+          kind: "photo",
+          text: s.text,
+          englishCaption: actLang === "easy" ? s.easyCaption : s.naturalCaption,
+          actLang: actLang,
+          image: s.image,
+        });
       }
     });
     return list;
+  }
+
+  // A brief title card marking the start of each act ("Easy English" / "Natural English").
+  function buildActTitleScene(actLang) {
+    return [{
+      kind: "act-title",
+      label: actLang === "easy" ? "EASY ENGLISH" : "NATURAL ENGLISH",
+      subLabel: actLang === "easy" ? "쉬운 영어로" : "자연스러운 영어로",
+    }];
   }
 
   // A quiet opening: the user's own uploaded photos cycling underneath (falling back to
@@ -533,46 +550,43 @@
     var script = result.koreanSpeakScript;
     if (!script || !String(script).trim()) return [];
     var uploaded = (photos || []).filter(Boolean);
-    var bgImages = uploaded.length > 0 ? uploaded : buildPhotoScenes(result).map(function (p) { return p.image; });
+    var bgImages = uploaded.length > 0 ? uploaded : (result.scenes || []).filter(function (s) { return s && s.image; }).map(function (s) { return s.image; });
     if (bgImages.length === 0) return [];
     return [{ kind: "intro", text: script, photoCount: bgImages.length, bgImages: bgImages }];
   }
 
-  // lang === "ko" -> only Korean expr/vocab flashcards. lang === "easy"/"natural" -> only
-  // English expr/vocab flashcards. lang == null -> everything (used by the static Scenes tab,
-  // which has no language selector and should just show all of it for browsing).
-  function buildFlashcards(result, lang) {
+  // All four flashcard categories (English/Korean × expressions/vocabulary), shown once
+  // at the very end of the slideshow.
+  function buildFlashcards(result) {
     var list = [];
-    var includeEnglish = lang == null || lang === "easy" || lang === "natural";
-    var includeKorean = lang == null || lang === "ko";
-
-    if (includeEnglish) {
-      (result.expressions || []).forEach(function (e) {
-        var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
-        var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
-        if (phrase) list.push({ kind: "expr", headline: phrase, sub: meaning });
-      });
-      (result.vocabulary || []).forEach(function (v) {
-        if (v && v.word) list.push({ kind: "vocab", headline: v.word, sub: v.meaning || "" });
-      });
-    }
-    if (includeKorean) {
-      (result.koreanExpressions || []).forEach(function (e) {
-        var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
-        var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
-        if (phrase) list.push({ kind: "kr-expr", headline: phrase, sub: meaning });
-      });
-      (result.koreanVocabulary || []).forEach(function (v) {
-        if (v && v.word) list.push({ kind: "kr-vocab", headline: v.word, sub: v.meaning || "" });
-      });
-    }
+    (result.expressions || []).forEach(function (e) {
+      var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
+      var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
+      if (phrase) list.push({ kind: "expr", headline: phrase, sub: meaning });
+    });
+    (result.vocabulary || []).forEach(function (v) {
+      if (v && v.word) list.push({ kind: "vocab", headline: v.word, sub: v.meaning || "" });
+    });
+    (result.koreanExpressions || []).forEach(function (e) {
+      var phrase = typeof e === "string" ? e : (e && e.phrase) || "";
+      var meaning = typeof e === "string" ? "" : (e && e.meaning) || "";
+      if (phrase) list.push({ kind: "kr-expr", headline: phrase, sub: meaning });
+    });
+    (result.koreanVocabulary || []).forEach(function (v) {
+      if (v && v.word) list.push({ kind: "kr-vocab", headline: v.word, sub: v.meaning || "" });
+    });
     return list;
   }
 
-  // The intro always comes first, regardless of subtitle language — it's the opening of
-  // the video, not tied to the easy/natural/Korean study-language toggle.
-  function buildPlayableScenes(result, lang, photos) {
-    return buildIntroScene(result, photos).concat(buildPhotoScenes(result)).concat(buildFlashcards(result, lang));
+  // Full slideshow order: opening photo roll → "Easy English" title → Korean+Easy pairs →
+  // "Natural English" title (no photo roll repeat) → Korean+Natural pairs → flashcards.
+  function buildPlayableScenes(result, photos) {
+    return buildIntroScene(result, photos)
+      .concat(buildActTitleScene("easy"))
+      .concat(buildActPhotoScenes(result, "easy"))
+      .concat(buildActTitleScene("natural"))
+      .concat(buildActPhotoScenes(result, "natural"))
+      .concat(buildFlashcards(result));
   }
 
   function renderScenes(result) {
@@ -583,7 +597,7 @@
       return '<p style="font-size:13px; color:var(--ink-soft);">생성된 장면이 없어요.</p>';
     }
 
-    var playable = buildPlayableScenes(result, null);
+    var playable = buildPlayableScenes(result, []);
     var playBtn = playable.length > 0
       ? '<button class="btn" style="margin-bottom:14px;" data-action="open-player">▶ 슬라이드쇼로 보기</button>'
       : "";
@@ -604,7 +618,7 @@
       );
     }).join("");
 
-    var flashCards = playable.filter(function (s) { return s.kind !== "photo" && s.kind !== "intro"; }).map(function (s) {
+    var flashCards = buildFlashcards(result).map(function (s) {
       var isKr = s.kind === "kr-expr" || s.kind === "kr-vocab";
       var tagLabel =
         s.kind === "expr" ? "EXPRESSION · 표현" :
@@ -738,22 +752,10 @@
   // nodes directly, leaving the canvas untouched. The animation loop itself
   // (stepPlayer) never calls render().
 
-  function getSceneCaption(scene, lang) {
-    if (lang === "easy") return scene.easyCaption || scene.text || "";
-    if (lang === "natural") return scene.naturalCaption || scene.text || "";
-    return scene.text || "";
-  }
-
-  function getLangLabel(lang) {
-    if (lang === "easy") return "EASY ENGLISH";
-    if (lang === "natural") return "NATURAL ENGLISH";
-    return "한국어";
-  }
-
-  function computeSceneDurationMs(caption, lang) {
-    var perChar = lang === "ko" ? 110 : 70;
-    var ms = 1200 + caption.length * perChar;
-    return Math.max(3200, ms); // no upper cap — long captions get proportionally more time to read
+  function computeDualCaptionDurationMs(koreanText, englishText) {
+    var koMs = 1200 + (koreanText || "").length * 110;
+    var enMs = 1200 + (englishText || "").length * 70;
+    return Math.max(4000, Math.max(koMs, enMs)); // no upper cap — long text gets proportionally more time
   }
 
   function computeFlashcardDurationMs(scene) {
@@ -761,6 +763,17 @@
     var perChar = isKr ? 100 : 75;
     var totalLen = ((scene.headline || "").length) + ((scene.sub || "").length);
     return Math.max(3600, 1500 + totalLen * perChar);
+  }
+
+  // Draws text with a dark outline behind the fill, so it stays legible even when the
+  // photo underneath happens to be bright/white right where the caption sits.
+  function fillTextWithOutline(ctx, text, x, y, fontSizePx) {
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+    ctx.lineWidth = Math.max(2, fontSizePx * 0.12);
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
+    ctx.strokeText(text, x, y);
+    ctx.fillText(text, x, y);
   }
 
   function easeInOutQuad(t) {
@@ -919,10 +932,53 @@
     }
   }
 
+  function drawActTitleFrame(scene, t) {
+    var ctx = playerCtx;
+    var W = playerCanvas.width, H = playerCanvas.height;
+
+    ctx.fillStyle = "#1A2420";
+    ctx.fillRect(0, 0, W, H);
+
+    var te = easeInOutQuad(Math.min(1, t / 0.3));
+    var breathe = Math.sin(t * Math.PI * 2 * 0.6) * 0.004;
+    var scale = 0.96 + 0.04 * te + breathe;
+
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(-W / 2, -H / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+
+    ctx.strokeStyle = "rgba(247, 245, 236, 0.35)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.38, H * 0.42);
+    ctx.lineTo(W * 0.62, H * 0.42);
+    ctx.stroke();
+
+    var titleSize = Math.round(W * 0.06);
+    ctx.font = "700 " + titleSize + "px 'JetBrains Mono', monospace";
+    ctx.fillStyle = "#F7F5EC";
+    ctx.fillText(scene.label, W / 2, H * 0.52);
+
+    var subSize = Math.round(W * 0.026);
+    ctx.font = "500 " + subSize + "px 'Noto Serif KR', serif";
+    ctx.fillStyle = "rgba(247, 245, 236, 0.7)";
+    ctx.fillText(scene.subLabel, W / 2, H * 0.52 + titleSize * 1.1);
+
+    ctx.restore();
+    ctx.textAlign = "left";
+  }
+
   function drawPlayerFrame(scene, t, index, elapsedMs) {
     if (!playerCtx || !playerCanvas) return;
     if (scene.kind === "intro") {
       drawOpeningFrame(scene, t, elapsedMs);
+      return;
+    }
+    if (scene.kind === "act-title") {
+      drawActTitleFrame(scene, t);
       return;
     }
     if (scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab") {
@@ -953,41 +1009,65 @@
       ctx.drawImage(img, dx, dy, dw, dh);
     }
 
-    var lang = state.player.subtitleLang;
-    var caption = getSceneCaption(scene, lang);
-    if (caption) {
-      var bandH = Math.round(H * 0.26);
+    // Korean original + English caption shown together, paginated in lockstep so long
+    // text never gets cut off — and outlined so they stay readable over bright photos.
+    var koreanText = scene.text || "";
+    var englishText = scene.englishCaption || "";
+    if (koreanText || englishText) {
+      var pad = W * 0.06;
+      var maxWidth = W - pad * 2;
+
+      var koFontSize = Math.round(W * 0.03);
+      var enFontSize = Math.round(W * 0.027);
+      ctx.textBaseline = "alphabetic";
+
+      ctx.font = "600 " + koFontSize + "px 'Noto Serif KR', serif";
+      var koPages = paginateLines(wrapCanvasText(ctx, koreanText, maxWidth), 2);
+      ctx.font = "500 " + enFontSize + "px 'JetBrains Mono', monospace";
+      var enPages = paginateLines(wrapCanvasText(ctx, englishText, maxWidth), 2);
+
+      var pageCount = Math.max(koPages.length, enPages.length);
+      var pageIdx = currentPageIndex(t, pageCount);
+      var koLines = koPages[Math.min(pageIdx, koPages.length - 1)] || [];
+      var enLines = enPages[Math.min(pageIdx, enPages.length - 1)] || [];
+
+      var koLineHeight = koFontSize * 1.42;
+      var enLineHeight = enFontSize * 1.5;
+      var tagSize = Math.round(W * 0.017);
+      var tagGap = tagSize * 1.6;
+      var blockGap = enFontSize * 0.85;
+
+      var contentHeight = tagGap + koLines.length * koLineHeight + blockGap + enLines.length * enLineHeight;
+      var bandH = Math.min(H * 0.52, contentHeight + pad * 1.5);
+
       var grad = ctx.createLinearGradient(0, H - bandH, 0, H);
       grad.addColorStop(0, "rgba(20,24,20,0)");
-      grad.addColorStop(0.45, "rgba(20,24,20,0.65)");
-      grad.addColorStop(1, "rgba(20,24,20,0.8)");
+      grad.addColorStop(0.3, "rgba(20,24,20,0.72)");
+      grad.addColorStop(1, "rgba(20,24,20,0.88)");
       ctx.fillStyle = grad;
       ctx.fillRect(0, H - bandH, W, bandH);
 
-      var pad = W * 0.06;
-      var maxWidth = W - pad * 2;
-      var isKo = lang === "ko";
-      var fontSize = Math.round(W * 0.032);
-      var fontFamily = isKo ? "'Noto Serif KR', serif" : "'JetBrains Mono', monospace";
-      ctx.font = (isKo ? "600 " : "500 ") + fontSize + "px " + fontFamily;
-      ctx.textBaseline = "alphabetic";
-
-      var allLines = wrapCanvasText(ctx, caption, maxWidth);
-      var pages = paginateLines(allLines, 3);
-      var pageIdx = currentPageIndex(t, pages.length);
-      var lines = pages[pageIdx];
-      var lineHeight = fontSize * 1.5;
-      var startY = H - pad * 0.9 - (lines.length - 1) * lineHeight;
-
-      var labelText = getLangLabel(lang) + (pages.length > 1 ? "  ·  " + (pageIdx + 1) + "/" + pages.length : "");
-      ctx.font = "600 " + Math.round(W * 0.018) + "px 'JetBrains Mono', monospace";
+      var contentTop = H - bandH + pad * 0.7;
+      var actLabel = scene.actLang === "easy" ? "EASY ENGLISH" : "NATURAL ENGLISH";
+      var tagText = "한국어 · " + actLabel + (pageCount > 1 ? "  ·  " + (pageIdx + 1) + "/" + pageCount : "");
+      ctx.font = "600 " + tagSize + "px 'JetBrains Mono', monospace";
       ctx.fillStyle = "rgba(220, 230, 222, 0.75)";
-      ctx.fillText(labelText, pad, startY - lineHeight - fontSize * 0.3);
+      ctx.fillText(tagText, pad, contentTop + tagSize);
 
-      ctx.font = (isKo ? "600 " : "500 ") + fontSize + "px " + fontFamily;
+      var y = contentTop + tagGap + koFontSize * 0.85;
+      ctx.font = "600 " + koFontSize + "px 'Noto Serif KR', serif";
       ctx.fillStyle = "#F7F5EC";
-      lines.forEach(function (line, i) {
-        ctx.fillText(line, pad, startY + i * lineHeight);
+      koLines.forEach(function (line) {
+        fillTextWithOutline(ctx, line, pad, y, koFontSize);
+        y += koLineHeight;
+      });
+
+      y += blockGap;
+      ctx.font = "500 " + enFontSize + "px 'JetBrains Mono', monospace";
+      ctx.fillStyle = "#F3E3C2";
+      enLines.forEach(function (line) {
+        fillTextWithOutline(ctx, line, pad, y, enFontSize);
+        y += enLineHeight;
       });
     }
   }
@@ -1003,14 +1083,6 @@
   function updatePlayerDots() {
     var dots = document.querySelectorAll("#kb-dots .kb-dot");
     dots.forEach(function (d, i) { d.classList.toggle("active", i === state.player.index); });
-  }
-
-  // Used when the number of scenes itself changes (switching subtitle language changes
-  // which flashcards are included), since updatePlayerDots() above only toggles the
-  // active class on however many dot elements already exist in the DOM.
-  function rebuildPlayerDots() {
-    var container = document.getElementById("kb-dots");
-    if (container) container.innerHTML = renderDotsMarkup(state.player.scenes.length, state.player.index);
   }
 
   // requestAnimationFrame is paused entirely by the browser when the tab is hidden/
@@ -1057,10 +1129,12 @@
       var duration;
       if (scene.kind === "intro") {
         duration = Math.max(1500, (scene.photoCount || 1) * 1500);
+      } else if (scene.kind === "act-title") {
+        duration = 2200;
       } else if (isFlashcard) {
         duration = computeFlashcardDurationMs(scene);
       } else {
-        duration = computeSceneDurationMs(getSceneCaption(scene, state.player.subtitleLang), state.player.subtitleLang);
+        duration = computeDualCaptionDurationMs(scene.text, scene.englishCaption);
       }
       var t = Math.min(1, playerElapsed / duration);
 
@@ -1445,14 +1519,11 @@
   }
 
   function openPlayer(result, photos) {
-    var initialLang = "ko";
-    var usable = buildPlayableScenes(result || {}, initialLang, photos);
-    if (usable.length === 0) usable = buildPlayableScenes(result || {}, null, photos);
+    var usable = buildPlayableScenes(result || {}, photos);
     if (usable.length === 0) return;
     state.player = {
       active: true,
       scenes: usable,
-      subtitleLang: initialLang,
       index: 0,
       playing: true,
       exporting: false,
@@ -1485,7 +1556,7 @@
     stopPlayerAudio();
     if (state.player.videoUrl) URL.revokeObjectURL(state.player.videoUrl);
     exportedVideoBlob = null;
-    state.player = { active: false, scenes: [], subtitleLang: "ko", index: 0, playing: false, exporting: false, exportDone: false, exportError: "", videoUrl: "", videoExt: "webm", muted: audioMuted };
+    state.player = { active: false, scenes: [], index: 0, playing: false, exporting: false, exportDone: false, exportError: "", videoUrl: "", videoExt: "webm", muted: audioMuted };
     playerCanvas = null; playerCtx = null; playerImages = []; introBgImageObjs = [];
     render();
   }
@@ -1650,10 +1721,6 @@
 
     var dots = renderDotsMarkup(p.scenes.length, p.index);
 
-    var langChips = [["ko", "한국어"], ["easy", "Easy English"], ["natural", "Natural English"]].map(function (pair) {
-      return '<button class="kb-chip' + (p.subtitleLang === pair[0] ? " active" : "") + '" data-action="player-set-lang" data-lang="' + pair[0] + '" ' + (p.exporting ? "disabled" : "") + ">" + pair[1] + "</button>";
-    }).join("");
-
     var controls = p.exporting
       ? (
           '<div class="kb-export-status">' +
@@ -1670,7 +1737,6 @@
             '<button class="icon-btn" id="kb-mute" data-action="player-toggle-mute" aria-label="배경음 켜기/끄기">' + (p.muted ? "🔇" : "🔊") + "</button>" +
           "</div>" +
           '<div class="kb-dots" id="kb-dots">' + dots + "</div>" +
-          '<div class="kb-lang-row">' + langChips + "</div>" +
           (p.exportError ? '<p class="err" style="margin-top:10px;">' + escapeHtml(p.exportError) + "</p>" : "") +
           '<button class="btn" style="margin-top:14px; width:100%; justify-content:center;" data-action="player-export">🎬 MP4로 내보내기</button>'
         );
@@ -1787,22 +1853,6 @@
       playerElapsed = 0; playerLastTs = null;
       updatePlayerDots();
       if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
-    } else if (action === "player-set-lang") {
-      var newLang = target.getAttribute("data-lang");
-      state.player.subtitleLang = newLang;
-      document.querySelectorAll('[data-action="player-set-lang"]').forEach(function (el) {
-        el.classList.toggle("active", el.getAttribute("data-lang") === newLang);
-      });
-      if (activeResultForPlayer) {
-        var rebuilt = buildPlayableScenes(activeResultForPlayer, newLang, activePhotosForPlayer);
-        if (rebuilt.length > 0) {
-          state.player.scenes = rebuilt;
-          while (playerImages.length < rebuilt.length) playerImages.push(null);
-          if (state.player.index >= rebuilt.length) state.player.index = rebuilt.length - 1;
-          playerElapsed = 0; playerLastTs = null;
-          rebuildPlayerDots();
-        }
-      }
     } else if (action === "player-export") {
       startExport();
     } else if (action === "player-cancel-export") {

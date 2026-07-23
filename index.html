@@ -753,7 +753,14 @@
   function computeSceneDurationMs(caption, lang) {
     var perChar = lang === "ko" ? 110 : 70;
     var ms = 1200 + caption.length * perChar;
-    return Math.max(3200, Math.min(9000, ms));
+    return Math.max(3200, ms); // no upper cap — long captions get proportionally more time to read
+  }
+
+  function computeFlashcardDurationMs(scene) {
+    var isKr = scene.kind === "kr-expr" || scene.kind === "kr-vocab";
+    var perChar = isKr ? 100 : 75;
+    var totalLen = ((scene.headline || "").length) + ((scene.sub || "").length);
+    return Math.max(3600, 1500 + totalLen * perChar);
   }
 
   function easeInOutQuad(t) {
@@ -787,6 +794,23 @@
     return lines;
   }
 
+  // Splits a full list of wrapped lines into "pages" of `perPage` lines each, so long
+  // text can be shown a page at a time (cycling through pages over the scene's duration)
+  // instead of being truncated.
+  function paginateLines(lines, perPage) {
+    var pages = [];
+    for (var i = 0; i < lines.length; i += perPage) {
+      pages.push(lines.slice(i, i + perPage));
+    }
+    return pages.length > 0 ? pages : [[]];
+  }
+
+  // Picks which page should be showing right now, given progress t (0..1) through the
+  // scene's total duration, by dividing that duration evenly across all pages.
+  function currentPageIndex(t, pageCount) {
+    return Math.min(pageCount - 1, Math.floor(t * pageCount));
+  }
+
   function drawFlashcardFrame(scene, t) {
     var ctx = playerCtx;
     var W = playerCanvas.width, H = playerCanvas.height;
@@ -798,7 +822,11 @@
     ctx.fillRect(0, 0, W, H);
 
     var te = easeInOutQuad(Math.min(1, t / 0.35));
-    var scale = 0.96 + 0.04 * te;
+    // A near-imperceptible continuous breathing motion for the rest of the duration —
+    // some browsers' video encoders can corrupt/freeze a captured MP4 stream after many
+    // consecutive bit-identical frames, so the canvas must never go fully static.
+    var breathe = Math.sin(t * Math.PI * 2 * 0.6) * 0.004;
+    var scale = 0.96 + 0.04 * te + breathe;
 
     ctx.save();
     ctx.translate(W / 2, H / 2);
@@ -826,7 +854,7 @@
     var headlineSize = Math.round(W * (isKr ? 0.056 : 0.052));
     ctx.font = (isKr ? "600 " : "700 ") + headlineSize + "px " + headlineFont;
     ctx.fillStyle = "#26323A";
-    var headlineLines = wrapCanvasText(ctx, scene.headline || "", W * 0.8).slice(0, 2);
+    var headlineLines = wrapCanvasText(ctx, scene.headline || "", W * 0.8).slice(0, 3);
     var lineHeight1 = headlineSize * 1.3;
     var startY1 = H * 0.5;
     headlineLines.forEach(function (line, i) {
@@ -837,12 +865,22 @@
       var subSize = Math.round(W * (isKr ? 0.024 : 0.026));
       ctx.font = "500 " + subSize + "px " + subFont;
       ctx.fillStyle = "#6B7178";
-      var subLines = wrapCanvasText(ctx, scene.sub, W * 0.7).slice(0, 2);
+      var subPages = paginateLines(wrapCanvasText(ctx, scene.sub, W * 0.7), 2);
+      var subLines = subPages[currentPageIndex(t, subPages.length)];
       var lineHeight2 = subSize * 1.6;
       var startY2 = startY1 + (headlineLines.length - 1) * lineHeight1 + headlineSize * 1.5;
       subLines.forEach(function (line, i) {
         ctx.fillText(line, W / 2, startY2 + i * lineHeight2);
       });
+      if (subPages.length > 1) {
+        ctx.font = "500 " + Math.round(subSize * 0.75) + "px 'JetBrains Mono', monospace";
+        ctx.fillStyle = "rgba(107, 113, 120, 0.6)";
+        ctx.fillText(
+          (currentPageIndex(t, subPages.length) + 1) + " / " + subPages.length,
+          W / 2,
+          startY2 + subLines.length * lineHeight2 + subSize * 0.6
+        );
+      }
     }
 
     ctx.restore();
@@ -865,9 +903,15 @@
       var img = introBgImageObjs[cycleIdx];
       if (img && img.complete && img.naturalWidth) {
         var isLandscape = img.naturalWidth >= img.naturalHeight;
-        var baseScale = isLandscape
+        // Slow continuous zoom across this photo's ~1.5s slot — never fully static (some
+        // browsers' video encoders can corrupt/freeze a captured MP4 stream after many
+        // consecutive bit-identical frames), and it looks nicer besides.
+        var slotT = ((elapsedMs || 0) % 1500) / 1500;
+        var zoom = 1.0 + 0.05 * slotT;
+        var fitScale = isLandscape
           ? Math.max(W / img.naturalWidth, H / img.naturalHeight)
           : Math.min(W / img.naturalWidth, H / img.naturalHeight);
+        var baseScale = fitScale * zoom;
         var dw = img.naturalWidth * baseScale, dh = img.naturalHeight * baseScale;
         var dx = (W - dw) / 2, dy = (H - dh) / 2;
         ctx.drawImage(img, dx, dy, dw, dh);
@@ -928,13 +972,17 @@
       ctx.font = (isKo ? "600 " : "500 ") + fontSize + "px " + fontFamily;
       ctx.textBaseline = "alphabetic";
 
-      var lines = wrapCanvasText(ctx, caption, maxWidth).slice(0, 3);
+      var allLines = wrapCanvasText(ctx, caption, maxWidth);
+      var pages = paginateLines(allLines, 3);
+      var pageIdx = currentPageIndex(t, pages.length);
+      var lines = pages[pageIdx];
       var lineHeight = fontSize * 1.5;
       var startY = H - pad * 0.9 - (lines.length - 1) * lineHeight;
 
+      var labelText = getLangLabel(lang) + (pages.length > 1 ? "  ·  " + (pageIdx + 1) + "/" + pages.length : "");
       ctx.font = "600 " + Math.round(W * 0.018) + "px 'JetBrains Mono', monospace";
       ctx.fillStyle = "rgba(220, 230, 222, 0.75)";
-      ctx.fillText(getLangLabel(lang), pad, startY - lineHeight - fontSize * 0.3);
+      ctx.fillText(labelText, pad, startY - lineHeight - fontSize * 0.3);
 
       ctx.font = (isKo ? "600 " : "500 ") + fontSize + "px " + fontFamily;
       ctx.fillStyle = "#F7F5EC";
@@ -1002,42 +1050,60 @@
     var scene = scenes[state.player.index];
     if (!scene) { playerRAF = null; return; }
 
-    updateAudioPhaseForScene(scene);
+    try {
+      updateAudioPhaseForScene(scene);
 
-    var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
-    var duration;
-    if (scene.kind === "intro") {
-      duration = Math.max(1500, (scene.photoCount || 1) * 1500);
-    } else if (isFlashcard) {
-      duration = 3600;
-    } else {
-      duration = computeSceneDurationMs(getSceneCaption(scene, state.player.subtitleLang), state.player.subtitleLang);
-    }
-    var t = Math.min(1, playerElapsed / duration);
+      var isFlashcard = scene.kind === "expr" || scene.kind === "vocab" || scene.kind === "kr-expr" || scene.kind === "kr-vocab";
+      var duration;
+      if (scene.kind === "intro") {
+        duration = Math.max(1500, (scene.photoCount || 1) * 1500);
+      } else if (isFlashcard) {
+        duration = computeFlashcardDurationMs(scene);
+      } else {
+        duration = computeSceneDurationMs(getSceneCaption(scene, state.player.subtitleLang), state.player.subtitleLang);
+      }
+      var t = Math.min(1, playerElapsed / duration);
 
-    drawPlayerFrame(scene, t, state.player.index, playerElapsed);
+      drawPlayerFrame(scene, t, state.player.index, playerElapsed);
 
-    if (state.player.exporting) {
-      var overall = (state.player.index + t) / scenes.length;
-      var bar = document.getElementById("kb-export-bar");
-      if (bar) bar.style.width = Math.round(overall * 100) + "%";
-      var label = document.getElementById("kb-export-label");
-      if (label) label.textContent = "녹화 중… " + Math.min(state.player.index + 1, scenes.length) + " / " + scenes.length + "장면";
-    }
+      if (state.player.exporting) {
+        var overall = (state.player.index + t) / scenes.length;
+        var bar = document.getElementById("kb-export-bar");
+        if (bar) bar.style.width = Math.round(overall * 100) + "%";
+        var label = document.getElementById("kb-export-label");
+        if (label) label.textContent = "녹화 중… " + Math.min(state.player.index + 1, scenes.length) + " / " + scenes.length + "장면";
+      }
 
-    if (t >= 1 && advancing) {
+      if (t >= 1 && advancing) {
+        playerElapsed = 0;
+        if (state.player.index < scenes.length - 1) {
+          state.player.index++;
+          updatePlayerDots();
+          if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
+        } else if (state.player.exporting) {
+          finishExportRecording();
+          return;
+        } else {
+          state.player.index = 0;
+          updatePlayerDots();
+          if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
+        }
+      }
+    } catch (err) {
+      // A single bad frame must never silently kill the loop (and, during export, freeze
+      // the recording while audio keeps playing) — log it, skip to the next scene, and
+      // keep going.
+      console.error("stepPlayer error on scene", state.player.index, err);
       playerElapsed = 0;
       if (state.player.index < scenes.length - 1) {
         state.player.index++;
         updatePlayerDots();
-        if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
       } else if (state.player.exporting) {
         finishExportRecording();
         return;
       } else {
         state.player.index = 0;
         updatePlayerDots();
-        if (audioCtx) playSceneTransitionAccent(audioCtx.currentTime + 0.02);
       }
     }
 
@@ -1486,7 +1552,7 @@
         state.player.videoExt = mimeType.indexOf("mp4") !== -1 ? "mp4" : "webm";
         render();
       };
-      mediaRecorder.start();
+      mediaRecorder.start(1000);
       playerElapsed = 0;
       playerLastTs = null;
       cancelPlayerFrame();
